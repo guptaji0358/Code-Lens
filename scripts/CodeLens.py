@@ -1397,6 +1397,7 @@ class FinderWindow(QMainWindow):
         self.results_zoom_steps = 0
         self.shortcut_keys = load_shortcuts()
         self._busy_threads = []  # keep QThread/worker refs alive until finished
+        self._results_buffer = []
 
         self.setWindowTitle(f"{APP_NAME} - {APP_TAGLINE}")
         self.resize(1220, 780)
@@ -2184,6 +2185,7 @@ class FinderWindow(QMainWindow):
     def _clear_results(self):
         self.results.clear()
         self.results_summary.setText("")
+        self._results_buffer = []
 
     # ---------------------------------------------------------- zoom --
     # QTextEdit.setFont() alone doesn't work here: the global stylesheet
@@ -2248,16 +2250,26 @@ class FinderWindow(QMainWindow):
         if not self.state.is_loaded():
             self._info("No files loaded", "Add at least one file first.")
             return
-        core.auto_reload_check(self.state)
-        self._refresh_file_list()
 
-        mode = self._mode_value()
-        if mode == "one":
-            self._search_one_line()
-        elif mode == "multi":
-            self._search_multi_line()
-        else:
-            self._search_line_range()
+        # auto_reload_check() stats (and possibly re-reads) every loaded
+        # file from disk on every single search - with several/large
+        # files that disk I/O was the other big source of the "search
+        # freezes the window" reports, since it ran synchronously on the
+        # UI thread before any regex matching even started.
+        def work():
+            core.auto_reload_check(self.state)
+
+        def done(_):
+            self._refresh_file_list()
+            mode = self._mode_value()
+            if mode == "one":
+                self._search_one_line()
+            elif mode == "multi":
+                self._search_multi_line()
+            else:
+                self._search_line_range()
+
+        self._run_busy(work, done, "Checking files for changes...")
 
     def _t(self):
         return self._effective_theme()
@@ -2275,7 +2287,18 @@ class FinderWindow(QMainWindow):
         if mono:
             style.append(f"font-family:'{FONT_MONO}'")
         style_attr = f' style="{";".join(style)}"' if style else ""
-        self.results.insertHtml(f"<span{style_attr}>{text}</span>")
+        # Buffered rather than a live self.results.insertHtml() call: each
+        # insertHtml() forces QTextEdit to re-lay out the whole document,
+        # so calling it per match/line (thousands of times for a big line
+        # range or a common search term) turned into an O(n^2) UI stall -
+        # the "becomes unresponsive" reports. One flush() at the end is
+        # a single layout pass no matter how many lines were written.
+        self._results_buffer.append(f"<span{style_attr}>{text}</span>")
+
+    def _flush_results(self):
+        if self._results_buffer:
+            self.results.insertHtml("".join(self._results_buffer))
+            self._results_buffer = []
 
     def _search_one_line(self):
         term = self.query_entry.text()
@@ -2352,6 +2375,7 @@ class FinderWindow(QMainWindow):
             num = str(i).rjust(width)
             self._write(f"{num}: ", color=t["accent"])
             self._write(f"{entry.lines[i - 1]}\n")
+        self._flush_results()
         self.results_summary.setText(f"{end - start + 1} line(s) shown")
         self._set_status(f"Showing lines {start}-{end} of {os.path.basename(entry.path)}.", "ok")
 
@@ -2419,6 +2443,7 @@ class FinderWindow(QMainWindow):
             self.results_summary.setText("0 matches")
             self._set_status("No matches found in any loaded file.", "warn")
             self._write("No matches found in any loaded file.\n", color=self._t()["warn"])
+        self._flush_results()
 
 
 def main():

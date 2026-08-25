@@ -214,6 +214,44 @@
   .badge.claude { color: var(--text); border-color: var(--border-strong); }
   .badge.claude svg, .badge.claude img { width: 15px; height: 15px; flex: none; object-fit: contain; }
 
+  /* ---- shimmer-sweep: a moving highlight loops across "featured" badges,
+     the same live-badge trick SaaS sites use instead of a plain static logo ---- */
+  .badge.claude, .claude-badge {
+    position: relative;
+    overflow: hidden;
+  }
+  .badge.claude::after, .claude-badge::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      100deg,
+      transparent 30%,
+      color-mix(in srgb, var(--accent) 35%, transparent) 47%,
+      color-mix(in srgb, var(--accent-2) 35%, transparent) 53%,
+      transparent 70%
+    );
+    background-size: 250% 100%;
+    background-position: 150% 0;
+    animation: badge-shimmer 4.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes badge-shimmer {
+    0%, 55% { background-position: 150% 0; }
+    100% { background-position: -50% 0; }
+  }
+  .badge.claude svg, .badge.claude img,
+  .claude-badge svg, .claude-badge img {
+    transition: transform 0.35s ease;
+  }
+  .badge.claude:hover svg, .badge.claude:hover img,
+  .claude-badge:hover svg, .claude-badge:hover img {
+    transform: scale(1.15) rotate(-6deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .badge.claude::after, .claude-badge::after { animation: none; display: none; }
+  }
+
   .hero-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
