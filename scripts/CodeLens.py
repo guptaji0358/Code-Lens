@@ -2366,18 +2366,31 @@ class FinderWindow(QMainWindow):
             self._error("Out of bounds", f"File only has {len(entry.lines)} lines.")
             return
 
-        self._clear_results()
-        t = self._t()
-        width = len(str(len(entry.lines)))
-        self._write(f"{os.path.basename(entry.path)}: lines {start}-{end}\n", color=t["secondary"], bold=True)
-        self._write(f"{entry.path}\n\n", color=t["fg_dim"])
-        for i in range(start, end + 1):
-            num = str(i).rjust(width)
-            self._write(f"{num}: ", color=t["accent"])
-            self._write(f"{entry.lines[i - 1]}\n")
-        self._flush_results()
-        self.results_summary.setText(f"{end - start + 1} line(s) shown")
-        self._set_status(f"Showing lines {start}-{end} of {os.path.basename(entry.path)}.", "ok")
+        # A big range (e.g. an entire large file) still froze the window
+        # even after buffering: building one <span> pair of HTML per line
+        # for tens/hundreds of thousands of lines makes QTextEdit's HTML
+        # parser itself the bottleneck, not the insertHtml() call count.
+        # Plain text has no per-line markup to parse, so build and insert
+        # the body as plain text instead - the string building also runs
+        # off the UI thread since it's pure Python with no widget access.
+        def work():
+            width = len(str(len(entry.lines)))
+            lines = entry.lines[start - 1:end]
+            return "\n".join(
+                f"{str(start + i).rjust(width)}: {line}" for i, line in enumerate(lines)
+            )
+
+        def done(body):
+            self._clear_results()
+            t = self._t()
+            self._write(f"{os.path.basename(entry.path)}: lines {start}-{end}\n", color=t["secondary"], bold=True)
+            self._write(f"{entry.path}\n\n", color=t["fg_dim"])
+            self._flush_results()
+            self.results.insertPlainText(body)
+            self.results_summary.setText(f"{end - start + 1} line(s) shown")
+            self._set_status(f"Showing lines {start}-{end} of {os.path.basename(entry.path)}.", "ok")
+
+        self._run_busy(work, done, "Loading line range...")
 
     def _pick_range_file(self):
         if len(self.state.files) == 1:
