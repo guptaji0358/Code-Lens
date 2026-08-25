@@ -19,14 +19,16 @@ Run:    python CodeLens.py
 """
 
 import datetime
+import faulthandler
 import json
 import math
 import os
 import re
 import sys
+import traceback
 
 from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
+    Qt, QTimer, QThread, QObject, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
     Signal, QSequentialAnimationGroup, Property, QParallelAnimationGroup,
 )
 from PySide6.QtGui import (
@@ -39,7 +41,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPlainTextEdit, QFileDialog, QSplitter, QFrame, QCheckBox,
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
 )
 
 import CodeLensCLI as core
@@ -47,14 +49,94 @@ import CodeLensCLI as core
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _resource_base_dir():
+    """
+    Directory to resolve Assets/ against. A plain `os.path.dirname(__file__)`
+    breaks once this script is frozen into an .exe (e.g. via PyInstaller):
+    __file__ then points inside the bootloader's temp extraction folder, not
+    next to the real .exe, so Assets/ silently fails to resolve and every
+    icon (including the window icon) quietly disappears. PyInstaller sets
+    sys.frozen and sys._MEIPASS specifically to let frozen apps find their
+    bundled data; fall back to the source file's folder when running as a
+    normal .py script. Source runs live in scripts/, one level below the
+    repo root that actually holds Assets/, so go up one directory in that
+    case.
+    """
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _install_global_error_handling():
+    """
+    Route every unhandled exception (main thread) through a Qt message box
+    instead of the default behavior: PyQt/PySide silently prints to stderr
+    (invisible in a --windowed build) and leaves the app either frozen or
+    dead with no explanation - the "app not responding" reports. A log file
+    next to the exe also captures the traceback for later diagnosis, and
+    faulthandler covers native/interpreter-level crashes the same way.
+    """
+    log_path = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "CodeLens_crash.log"
+    )
+    try:
+        _fh = open(log_path, "a", encoding="utf-8")
+        faulthandler.enable(_fh)
+    except OSError:
+        pass
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n{text}")
+        except OSError:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle(f"{APP_NAME} - Unexpected error")
+            box.setText("Something went wrong and the action could not finish.")
+            box.setDetailedText(text)
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
+        else:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+
+class _AsyncWorker(QObject):
+    """Runs one callable on a background QThread so slow disk/regex work
+    (loading many/large files, reloading, scanning big searches) can't
+    freeze the Qt event loop and trigger Windows' "Not Responding" state."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            result = self._fn()
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.finished.emit(result)
+
+
+BASE_DIR = _resource_base_dir()
 ASSETS_DIR = os.path.join(BASE_DIR, "Assets")
 ICON_DIRS = {
     "dark": os.path.join(ASSETS_DIR, "DarkModeIcons"),
     "light": os.path.join(ASSETS_DIR, "LightModeIcons"),
     "hover": os.path.join(ASSETS_DIR, "HoverIcons"),
 }
-APP_ICON_PATH = os.path.join(ASSETS_DIR, "app_icon.svg")
+APP_ICON_PATH = os.path.join(ASSETS_DIR, "app_icon.ico")
 
 # Icons whose color should follow the user's chosen accent color instead
 # of staying fixed (danger/warn/secondary icons keep their semantic
@@ -1300,6 +1382,75 @@ def make_tool_button(text, icon_name, on_click, object_name=None, tooltip=None):
 
 
 # --------------------------------------------------------------------------
+# RESULTS HTML BUILDING (pure functions - safe to call from a worker thread)
+#
+# These only touch local lists/strings and the read-only theme dict passed
+# in - no `self`, no widgets - so on_search's one-line/multi-line/range
+# paths can each build their whole results buffer on a background QThread
+# and only touch the QTextEdit once, in the main-thread "done" callback.
+# --------------------------------------------------------------------------
+def _html_write(buffer, text, t=None, color=None, bold=False, mono=True, bg=None):
+    text = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\n", "<br>"))
+    style = []
+    if color:
+        style.append(f"color:{color}")
+    if bg:
+        style.append(f"background-color:{bg}")
+    if bold:
+        style.append("font-weight:600")
+    if mono:
+        style.append(f"font-family:'{FONT_MONO}'")
+    style_attr = f' style="{";".join(style)}"' if style else ""
+    buffer.append(f"<span{style_attr}>{text}</span>")
+
+
+def _html_write_match_line(buffer, t, line_no, line_text, spans, width, indent):
+    num_str = str(line_no).rjust(width)
+    _html_write(buffer, f"{indent}{num_str}: ", color=t["accent"])
+    if not spans:
+        _html_write(buffer, f"{line_text}\n")
+        return
+    cursor = 0
+    for start, end in spans:
+        _html_write(buffer, line_text[cursor:start])
+        _html_write(buffer, line_text[start:end], color=t["hl_fg"], bg=t["hl_bg"], bold=True)
+        cursor = end
+    _html_write(buffer, line_text[cursor:] + "\n")
+
+
+def _html_render_file_card(buffer, t, index, total, entry, results, note=None):
+    name = os.path.basename(entry.path)
+    if not results:
+        _html_write(buffer, f"  [{index}/{total}] {name} - no matches\n", color=t["fg_dim"])
+        return
+
+    count = len(results)
+    label = f"{count} match" if count == 1 else f"{count} matches"
+    _html_write(buffer, f"\n[{index}/{total}] ", color=t["fg_dim"])
+    _html_write(buffer, f"{name}", color=t["accent"], bold=True)
+    _html_write(buffer, "  -  ")
+    _html_write(buffer, f"{label}\n", color=t["ok"])
+    _html_write(buffer, f"  {entry.path}\n", color=t["fg_dim"])
+    if note:
+        _html_write(buffer, f"  ({note})\n", color=t["warn"])
+
+    width = len(str(max(len(entry.lines), 1)))
+    multiple = len(results) > 1
+    for n, item in enumerate(results, start=1):
+        if multiple:
+            _html_write(buffer, f"  -- match {n}/{len(results)} --\n", color=t["fg_dim"])
+        if item[0] == "single":
+            _, line_no, line_text, spans = item
+            _html_write_match_line(buffer, t, line_no, line_text, spans, width, indent="  ")
+        else:
+            _, start_no, end_no, per_line = item
+            _html_write(buffer, f"  Lines {start_no}-{end_no}:\n", color=t["accent"], bold=True)
+            for li_no, line_text, spans in per_line:
+                _html_write_match_line(buffer, t, li_no, line_text, spans, width, indent="    ")
+
+
+# --------------------------------------------------------------------------
 # MAIN WINDOW
 # --------------------------------------------------------------------------
 class FinderWindow(QMainWindow):
@@ -1314,6 +1465,8 @@ class FinderWindow(QMainWindow):
         self._explorer_saved_width = 300
         self.results_zoom_steps = 0
         self.shortcut_keys = load_shortcuts()
+        self._busy_threads = []  # keep QThread/worker refs alive until finished
+        self._results_buffer = []
 
         self.setWindowTitle(f"{APP_NAME} - {APP_TAGLINE}")
         self.resize(1220, 780)
@@ -1793,6 +1946,12 @@ class FinderWindow(QMainWindow):
         selection-dependent actions (remove, line-range target) work
         the same regardless of which view is active.
         """
+        # clear() wipes selection along with the items - every search
+        # (each of which now calls this to refresh line counts) was
+        # silently deselecting whatever file the user had picked, so
+        # Line Range would then reject an apparently-selected file with
+        # "select a file first". Capture by path and restore it below.
+        selected_paths = {e.path for e in self._selected_entries()}
         self.file_list.clear()
         t = self._effective_theme()
         accent = t["accent"]
@@ -1863,6 +2022,12 @@ class FinderWindow(QMainWindow):
                 item.setToolTip(entry.path)
                 self.file_list.addItem(item)
 
+        if selected_paths:
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item.data(Qt.UserRole) in selected_paths:
+                    item.setSelected(True)
+
         n = len(self.state.files)
         self.file_summary.setText(f"{n} file{'s' if n != 1 else ''} loaded")
 
@@ -1883,6 +2048,66 @@ class FinderWindow(QMainWindow):
         paths = {item.data(Qt.UserRole) for item in self.file_list.selectedItems()
                  if item.data(Qt.UserRole)}
         return [entry for entry in self.state.files if entry.path in paths]
+
+    # ---------------------------------------------------------- background work --
+    def _run_busy(self, work_fn, on_success, busy_text="Working..."):
+        """Run work_fn() off the UI thread; call on_success(result) back on
+        the UI thread when done. Keeps the window responsive (no "Not
+        Responding") during slow disk I/O or large regex scans.
+
+        IMPORTANT: worker.finished/failed are connected to real bound
+        methods of self (a QObject that was created on the UI thread),
+        not to local closures. Qt/PySide only auto-detects a signal's
+        target thread from a *bound method of a QObject* - connecting to
+        a plain closure/lambda instead has no such receiver to inspect,
+        so Qt invokes it directly on whichever thread emitted the signal
+        (here, the worker thread) instead of queuing it back to the UI
+        thread. That silently ran GUI calls (setEnabled, dialogs, text
+        insertion) off the UI thread, which is undefined behavior in Qt
+        and is what caused the window to lock up into unclickable
+        "label" widgets with stray Windows error beeps."""
+        self.setCursor(Qt.WaitCursor)
+        self._set_status(busy_text, "dim")
+        self.setEnabled(False)
+
+        thread = QThread(self)
+        worker = _AsyncWorker(work_fn)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        self._busy_threads.append({"thread": thread, "worker": worker, "on_success": on_success})
+        worker.finished.connect(self._on_busy_finished)
+        worker.failed.connect(self._on_busy_failed)
+        thread.start()
+
+    def _find_busy_entry(self, worker):
+        for entry in self._busy_threads:
+            if entry["worker"] is worker:
+                return entry
+        return None
+
+    def _busy_cleanup(self, entry):
+        self.setEnabled(True)
+        self.unsetCursor()
+        entry["thread"].quit()
+        entry["thread"].wait()
+        self._busy_threads.remove(entry)
+
+    def _on_busy_finished(self, result):
+        entry = self._find_busy_entry(self.sender())
+        if entry is None:
+            return
+        on_success = entry["on_success"]
+        self._busy_cleanup(entry)
+        on_success(result)
+
+    def _on_busy_failed(self, tb_text):
+        entry = self._find_busy_entry(self.sender())
+        if entry is None:
+            return
+        self._busy_cleanup(entry)
+        self._error("Unexpected error", tb_text)
+        self._set_status("Action failed - see error details.", "error")
 
     # ---------------------------------------------------------- dialogs helper --
     def _dialog(self, kind, title, message, buttons=None):
@@ -1918,18 +2143,27 @@ class FinderWindow(QMainWindow):
         if not paths:
             self._set_status("Nothing droppable - only local files can be added this way.", "warn")
             return
-        ok_count, fail_msgs = 0, []
-        for p in paths:
-            ok, msg = core.add_file_to_state(p, self.state)
-            if ok:
-                ok_count += 1
+        def work():
+            ok_count, fail_msgs = 0, []
+            for p in paths:
+                ok, msg = core.add_file_to_state(p, self.state)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_msgs.append(msg)
+            return ok_count, fail_msgs
+
+        def done(result):
+            ok_count, fail_msgs = result
+            self._refresh_file_list()
+            if fail_msgs:
+                self._error("Some dropped files failed to load", "\n".join(fail_msgs))
+            if ok_count:
+                self._set_status(f"Added {ok_count} file(s) via drag & drop.", "ok")
             else:
-                fail_msgs.append(msg)
-        self._refresh_file_list()
-        if fail_msgs:
-            self._error("Some dropped files failed to load", "\n".join(fail_msgs))
-        if ok_count:
-            self._set_status(f"Added {ok_count} file(s) via drag & drop.", "ok")
+                self._set_status("Ready.", "dim")
+
+        self._run_busy(work, done, "Loading dropped file(s)...")
         event.acceptProposedAction()
 
     # ---------------------------------------------------------- toolbar --
@@ -1937,18 +2171,27 @@ class FinderWindow(QMainWindow):
         paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to add")
         if not paths:
             return
-        ok_count, fail_msgs = 0, []
-        for p in paths:
-            ok, msg = core.add_file_to_state(p, self.state)
-            if ok:
-                ok_count += 1
+        def work():
+            ok_count, fail_msgs = 0, []
+            for p in paths:
+                ok, msg = core.add_file_to_state(p, self.state)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_msgs.append(msg)
+            return ok_count, fail_msgs
+
+        def done(result):
+            ok_count, fail_msgs = result
+            self._refresh_file_list()
+            if fail_msgs:
+                self._error("Some files failed to load", "\n".join(fail_msgs))
+            if ok_count:
+                self._set_status(f"Added {ok_count} file(s).", "ok")
             else:
-                fail_msgs.append(msg)
-        self._refresh_file_list()
-        if fail_msgs:
-            self._error("Some files failed to load", "\n".join(fail_msgs))
-        if ok_count:
-            self._set_status(f"Added {ok_count} file(s).", "ok")
+                self._set_status("Ready.", "dim")
+
+        self._run_busy(work, done, "Loading file(s)...")
 
     def on_remove(self):
         selected = self._selected_entries()
@@ -1983,20 +2226,29 @@ class FinderWindow(QMainWindow):
         if not self.state.is_loaded():
             self._set_status("No files loaded.", "warn")
             return
-        errors = []
-        for i, entry in enumerate(self.state.files):
-            new_entry, msg = core.load_single_file(entry.path)
-            if new_entry:
-                self.state.files[i] = new_entry
+        def work():
+            errors = []
+            new_files = list(self.state.files)
+            for i, entry in enumerate(new_files):
+                new_entry, msg = core.load_single_file(entry.path)
+                if new_entry:
+                    new_files[i] = new_entry
+                else:
+                    errors.append(msg)
+            return new_files, errors
+
+        def done(result):
+            new_files, errors = result
+            self.state.files = new_files
+            self.state.reset_search()
+            self._refresh_file_list()
+            if errors:
+                self._error("Reload finished with errors", "\n".join(errors))
+                self._set_status("Reload finished with errors.", "error")
             else:
-                errors.append(msg)
-        self.state.reset_search()
-        self._refresh_file_list()
-        if errors:
-            self._error("Reload finished with errors", "\n".join(errors))
-            self._set_status("Reload finished with errors.", "error")
-        else:
-            self._set_status(f"Reloaded {len(self.state.files)} file(s) from disk.", "ok")
+                self._set_status(f"Reloaded {len(self.state.files)} file(s) from disk.", "ok")
+
+        self._run_busy(work, done, "Reloading file(s) from disk...")
 
     def on_reset(self):
         if not self._confirm(
@@ -2039,6 +2291,7 @@ class FinderWindow(QMainWindow):
     def _clear_results(self):
         self.results.clear()
         self.results_summary.setText("")
+        self._results_buffer = []
 
     # ---------------------------------------------------------- zoom --
     # QTextEdit.setFont() alone doesn't work here: the global stylesheet
@@ -2090,8 +2343,15 @@ class FinderWindow(QMainWindow):
     def _on_mode_change(self, button, checked):
         if not checked:
             return
-        index = {"one": 0, "multi": 1, "range": 2}[self._mode_value()]
+        mode = self._mode_value()
+        index = {"one": 0, "multi": 1, "range": 2}[mode]
         self.input_stack.setCurrentIndex(index)
+        # Line Range needs one specific file - flag that up front when
+        # switching into the mode with several files loaded and none
+        # selected yet, instead of only after the user types a range and
+        # clicks Search and gets what looks like a rejection/error.
+        if mode == "range" and len(self.state.files) > 1 and not self._selected_entries():
+            self._set_status("Select a file in the list on the left to show a line range from.", "warn")
 
     def _mode_value(self):
         for value, rb in self.mode_buttons.items():
@@ -2103,9 +2363,6 @@ class FinderWindow(QMainWindow):
         if not self.state.is_loaded():
             self._info("No files loaded", "Add at least one file first.")
             return
-        core.auto_reload_check(self.state)
-        self._refresh_file_list()
-
         mode = self._mode_value()
         if mode == "one":
             self._search_one_line()
@@ -2130,7 +2387,18 @@ class FinderWindow(QMainWindow):
         if mono:
             style.append(f"font-family:'{FONT_MONO}'")
         style_attr = f' style="{";".join(style)}"' if style else ""
-        self.results.insertHtml(f"<span{style_attr}>{text}</span>")
+        # Buffered rather than a live self.results.insertHtml() call: each
+        # insertHtml() forces QTextEdit to re-lay out the whole document,
+        # so calling it per match/line (thousands of times for a big line
+        # range or a common search term) turned into an O(n^2) UI stall -
+        # the "becomes unresponsive" reports. One flush() at the end is
+        # a single layout pass no matter how many lines were written.
+        self._results_buffer.append(f"<span{style_attr}>{text}</span>")
+
+    def _flush_results(self):
+        if self._results_buffer:
+            self.results.insertHtml("".join(self._results_buffer))
+            self._results_buffer = []
 
     def _search_one_line(self):
         term = self.query_entry.text()
@@ -2141,15 +2409,33 @@ class FinderWindow(QMainWindow):
         pattern = re.compile(re.escape(term), flags)
         self.state.last_search = f"one: '{term}'"
 
-        self._clear_results()
-        total, files_hit = 0, 0
-        for i, entry in enumerate(self.state.files, start=1):
-            results = core._find_matches(entry.lines, pattern, multiline=False)
-            if results:
-                total += len(results)
-                files_hit += 1
-            self._render_file_card(i, len(self.state.files), entry, results)
-        self._finish_search(total, files_hit)
+        t = self._t()
+        state = self.state
+
+        # Its own background thread: auto-reload-from-disk, matching, and
+        # HTML building all happen off the UI thread. Only the final
+        # buffer touches a widget, in done() below, on the UI thread.
+        def work():
+            core.auto_reload_check(state)
+            files = state.files
+            buffer = []
+            total, files_hit = 0, 0
+            for i, entry in enumerate(files, start=1):
+                results = core._find_matches(entry.lines, pattern, multiline=False)
+                if results:
+                    total += len(results)
+                    files_hit += 1
+                _html_render_file_card(buffer, t, i, len(files), entry, results)
+            return buffer, total, files_hit
+
+        def done(result):
+            buffer, total, files_hit = result
+            self._refresh_file_list()
+            self._clear_results()
+            self._results_buffer = buffer
+            self._finish_search(total, files_hit)
+
+        self._run_busy(work, done, "Searching...")
 
     def _search_multi_line(self):
         snippet = self.query_multiline.toPlainText()
@@ -2173,16 +2459,31 @@ class FinderWindow(QMainWindow):
                     pattern_stripped_snippet = None
 
         self.state.last_search = f"multi: {snippet!r}"
-        self._clear_results()
-        total, files_hit = 0, 0
-        for i, entry in enumerate(self.state.files, start=1):
-            results, note = core._search_file_with_comment_fallback(
-                entry, pattern_as_typed, pattern_stripped_snippet)
-            if results:
-                total += len(results)
-                files_hit += 1
-            self._render_file_card(i, len(self.state.files), entry, results, note=note)
-        self._finish_search(total, files_hit)
+        t = self._t()
+        state = self.state
+
+        def work():
+            core.auto_reload_check(state)
+            files = state.files
+            buffer = []
+            total, files_hit = 0, 0
+            for i, entry in enumerate(files, start=1):
+                results, note = core._search_file_with_comment_fallback(
+                    entry, pattern_as_typed, pattern_stripped_snippet)
+                if results:
+                    total += len(results)
+                    files_hit += 1
+                _html_render_file_card(buffer, t, i, len(files), entry, results, note=note)
+            return buffer, total, files_hit
+
+        def done(result):
+            buffer, total, files_hit = result
+            self._refresh_file_list()
+            self._clear_results()
+            self._results_buffer = buffer
+            self._finish_search(total, files_hit)
+
+        self._run_busy(work, done, "Searching...")
 
     def _search_line_range(self):
         entry = self._pick_range_file()
@@ -2198,17 +2499,41 @@ class FinderWindow(QMainWindow):
             self._error("Out of bounds", f"File only has {len(entry.lines)} lines.")
             return
 
-        self._clear_results()
-        t = self._t()
-        width = len(str(len(entry.lines)))
-        self._write(f"{os.path.basename(entry.path)}: lines {start}-{end}\n", color=t["secondary"], bold=True)
-        self._write(f"{entry.path}\n\n", color=t["fg_dim"])
-        for i in range(start, end + 1):
-            num = str(i).rjust(width)
-            self._write(f"{num}: ", color=t["accent"])
-            self._write(f"{entry.lines[i - 1]}\n")
-        self.results_summary.setText(f"{end - start + 1} line(s) shown")
-        self._set_status(f"Showing lines {start}-{end} of {os.path.basename(entry.path)}.", "ok")
+        path = entry.path
+        state = self.state
+
+        # A big range (e.g. an entire large file) still froze the window
+        # even after buffering: building one <span> pair of HTML per line
+        # for tens/hundreds of thousands of lines makes QTextEdit's HTML
+        # parser itself the bottleneck, not the insertHtml() call count.
+        # Plain text has no per-line markup to parse, so build and insert
+        # the body as plain text instead - the string building also runs
+        # off the UI thread since it's pure Python with no widget access.
+        def work():
+            core.auto_reload_check(state)
+            current = next((e for e in state.files if e.path == path), entry)
+            lo = max(1, min(start, len(current.lines)))
+            hi = max(1, min(end, len(current.lines)))
+            width = len(str(len(current.lines)))
+            lines = current.lines[lo - 1:hi]
+            body = "\n".join(
+                f"{str(lo + i).rjust(width)}: {line}" for i, line in enumerate(lines)
+            )
+            return current, lo, hi, body
+
+        def done(result):
+            current, lo, hi, body = result
+            self._refresh_file_list()
+            self._clear_results()
+            t = self._t()
+            self._write(f"{os.path.basename(current.path)}: lines {lo}-{hi}\n", color=t["secondary"], bold=True)
+            self._write(f"{current.path}\n\n", color=t["fg_dim"])
+            self._flush_results()
+            self.results.insertPlainText(body)
+            self.results_summary.setText(f"{hi - lo + 1} line(s) shown")
+            self._set_status(f"Showing lines {lo}-{hi} of {os.path.basename(current.path)}.", "ok")
+
+        self._run_busy(work, done, "Loading line range...")
 
     def _pick_range_file(self):
         if len(self.state.files) == 1:
@@ -2220,51 +2545,6 @@ class FinderWindow(QMainWindow):
                    "Select which loaded file to show a line range from in the file list on the left.")
         return None
 
-    def _render_file_card(self, index, total, entry, results, note=None):
-        t = self._t()
-        name = os.path.basename(entry.path)
-        if not results:
-            self._write(f"  [{index}/{total}] {name} - no matches\n", color=t["fg_dim"])
-            return
-
-        count = len(results)
-        label = f"{count} match" if count == 1 else f"{count} matches"
-        self._write(f"\n[{index}/{total}] ", color=t["fg_dim"])
-        self._write(f"{name}", color=t["accent"], bold=True)
-        self._write("  -  ")
-        self._write(f"{label}\n", color=t["ok"])
-        self._write(f"  {entry.path}\n", color=t["fg_dim"])
-        if note:
-            self._write(f"  ({note})\n", color=t["warn"])
-
-        width = len(str(max(len(entry.lines), 1)))
-        multiple = len(results) > 1
-        for n, item in enumerate(results, start=1):
-            if multiple:
-                self._write(f"  -- match {n}/{len(results)} --\n", color=t["fg_dim"])
-            if item[0] == "single":
-                _, line_no, line_text, spans = item
-                self._write_match_line(line_no, line_text, spans, width, indent="  ")
-            else:
-                _, start_no, end_no, per_line = item
-                self._write(f"  Lines {start_no}-{end_no}:\n", color=t["accent"], bold=True)
-                for li_no, line_text, spans in per_line:
-                    self._write_match_line(li_no, line_text, spans, width, indent="    ")
-
-    def _write_match_line(self, line_no, line_text, spans, width, indent):
-        t = self._t()
-        num_str = str(line_no).rjust(width)
-        self._write(f"{indent}{num_str}: ", color=t["accent"])
-        if not spans:
-            self._write(f"{line_text}\n")
-            return
-        cursor = 0
-        for start, end in spans:
-            self._write(line_text[cursor:start])
-            self._write(line_text[start:end], color=t["hl_fg"], bg=t["hl_bg"], bold=True)
-            cursor = end
-        self._write(line_text[cursor:] + "\n")
-
     def _finish_search(self, total, files_hit):
         n = len(self.state.files)
         if total:
@@ -2274,9 +2554,11 @@ class FinderWindow(QMainWindow):
             self.results_summary.setText("0 matches")
             self._set_status("No matches found in any loaded file.", "warn")
             self._write("No matches found in any loaded file.\n", color=self._t()["warn"])
+        self._flush_results()
 
 
 def main():
+    _install_global_error_handling()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
