@@ -1946,6 +1946,12 @@ class FinderWindow(QMainWindow):
         selection-dependent actions (remove, line-range target) work
         the same regardless of which view is active.
         """
+        # clear() wipes selection along with the items - every search
+        # (each of which now calls this to refresh line counts) was
+        # silently deselecting whatever file the user had picked, so
+        # Line Range would then reject an apparently-selected file with
+        # "select a file first". Capture by path and restore it below.
+        selected_paths = {e.path for e in self._selected_entries()}
         self.file_list.clear()
         t = self._effective_theme()
         accent = t["accent"]
@@ -2015,6 +2021,12 @@ class FinderWindow(QMainWindow):
                 item.setData(Qt.UserRole, entry.path)
                 item.setToolTip(entry.path)
                 self.file_list.addItem(item)
+
+        if selected_paths:
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item.data(Qt.UserRole) in selected_paths:
+                    item.setSelected(True)
 
         n = len(self.state.files)
         self.file_summary.setText(f"{n} file{'s' if n != 1 else ''} loaded")
@@ -2331,8 +2343,15 @@ class FinderWindow(QMainWindow):
     def _on_mode_change(self, button, checked):
         if not checked:
             return
-        index = {"one": 0, "multi": 1, "range": 2}[self._mode_value()]
+        mode = self._mode_value()
+        index = {"one": 0, "multi": 1, "range": 2}[mode]
         self.input_stack.setCurrentIndex(index)
+        # Line Range needs one specific file - flag that up front when
+        # switching into the mode with several files loaded and none
+        # selected yet, instead of only after the user types a range and
+        # clicks Search and gets what looks like a rejection/error.
+        if mode == "range" and len(self.state.files) > 1 and not self._selected_entries():
+            self._set_status("Select a file in the list on the left to show a line range from.", "warn")
 
     def _mode_value(self):
         for value, rb in self.mode_buttons.items():
