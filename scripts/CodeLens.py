@@ -1972,7 +1972,19 @@ class FinderWindow(QMainWindow):
     def _run_busy(self, work_fn, on_success, busy_text="Working..."):
         """Run work_fn() off the UI thread; call on_success(result) back on
         the UI thread when done. Keeps the window responsive (no "Not
-        Responding") during slow disk I/O or large regex scans."""
+        Responding") during slow disk I/O or large regex scans.
+
+        IMPORTANT: worker.finished/failed are connected to real bound
+        methods of self (a QObject that was created on the UI thread),
+        not to local closures. Qt/PySide only auto-detects a signal's
+        target thread from a *bound method of a QObject* - connecting to
+        a plain closure/lambda instead has no such receiver to inspect,
+        so Qt invokes it directly on whichever thread emitted the signal
+        (here, the worker thread) instead of queuing it back to the UI
+        thread. That silently ran GUI calls (setEnabled, dialogs, text
+        insertion) off the UI thread, which is undefined behavior in Qt
+        and is what caused the window to lock up into unclickable
+        "label" widgets with stray Windows error beeps."""
         self.setCursor(Qt.WaitCursor)
         self._set_status(busy_text, "dim")
         self.setEnabled(False)
@@ -1982,26 +1994,39 @@ class FinderWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
-        def _cleanup():
-            self.setEnabled(True)
-            self.unsetCursor()
-            thread.quit()
-            thread.wait()
-            self._busy_threads.remove((thread, worker))
-
-        def _on_finished(result):
-            _cleanup()
-            on_success(result)
-
-        def _on_failed(tb_text):
-            _cleanup()
-            self._error("Unexpected error", tb_text)
-            self._set_status("Action failed - see error details.", "error")
-
-        worker.finished.connect(_on_finished)
-        worker.failed.connect(_on_failed)
-        self._busy_threads.append((thread, worker))
+        self._busy_threads.append({"thread": thread, "worker": worker, "on_success": on_success})
+        worker.finished.connect(self._on_busy_finished)
+        worker.failed.connect(self._on_busy_failed)
         thread.start()
+
+    def _find_busy_entry(self, worker):
+        for entry in self._busy_threads:
+            if entry["worker"] is worker:
+                return entry
+        return None
+
+    def _busy_cleanup(self, entry):
+        self.setEnabled(True)
+        self.unsetCursor()
+        entry["thread"].quit()
+        entry["thread"].wait()
+        self._busy_threads.remove(entry)
+
+    def _on_busy_finished(self, result):
+        entry = self._find_busy_entry(self.sender())
+        if entry is None:
+            return
+        on_success = entry["on_success"]
+        self._busy_cleanup(entry)
+        on_success(result)
+
+    def _on_busy_failed(self, tb_text):
+        entry = self._find_busy_entry(self.sender())
+        if entry is None:
+            return
+        self._busy_cleanup(entry)
+        self._error("Unexpected error", tb_text)
+        self._set_status("Action failed - see error details.", "error")
 
     # ---------------------------------------------------------- dialogs helper --
     def _dialog(self, kind, title, message, buttons=None):
