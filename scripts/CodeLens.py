@@ -1382,6 +1382,75 @@ def make_tool_button(text, icon_name, on_click, object_name=None, tooltip=None):
 
 
 # --------------------------------------------------------------------------
+# RESULTS HTML BUILDING (pure functions - safe to call from a worker thread)
+#
+# These only touch local lists/strings and the read-only theme dict passed
+# in - no `self`, no widgets - so on_search's one-line/multi-line/range
+# paths can each build their whole results buffer on a background QThread
+# and only touch the QTextEdit once, in the main-thread "done" callback.
+# --------------------------------------------------------------------------
+def _html_write(buffer, text, t=None, color=None, bold=False, mono=True, bg=None):
+    text = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\n", "<br>"))
+    style = []
+    if color:
+        style.append(f"color:{color}")
+    if bg:
+        style.append(f"background-color:{bg}")
+    if bold:
+        style.append("font-weight:600")
+    if mono:
+        style.append(f"font-family:'{FONT_MONO}'")
+    style_attr = f' style="{";".join(style)}"' if style else ""
+    buffer.append(f"<span{style_attr}>{text}</span>")
+
+
+def _html_write_match_line(buffer, t, line_no, line_text, spans, width, indent):
+    num_str = str(line_no).rjust(width)
+    _html_write(buffer, f"{indent}{num_str}: ", color=t["accent"])
+    if not spans:
+        _html_write(buffer, f"{line_text}\n")
+        return
+    cursor = 0
+    for start, end in spans:
+        _html_write(buffer, line_text[cursor:start])
+        _html_write(buffer, line_text[start:end], color=t["hl_fg"], bg=t["hl_bg"], bold=True)
+        cursor = end
+    _html_write(buffer, line_text[cursor:] + "\n")
+
+
+def _html_render_file_card(buffer, t, index, total, entry, results, note=None):
+    name = os.path.basename(entry.path)
+    if not results:
+        _html_write(buffer, f"  [{index}/{total}] {name} - no matches\n", color=t["fg_dim"])
+        return
+
+    count = len(results)
+    label = f"{count} match" if count == 1 else f"{count} matches"
+    _html_write(buffer, f"\n[{index}/{total}] ", color=t["fg_dim"])
+    _html_write(buffer, f"{name}", color=t["accent"], bold=True)
+    _html_write(buffer, "  -  ")
+    _html_write(buffer, f"{label}\n", color=t["ok"])
+    _html_write(buffer, f"  {entry.path}\n", color=t["fg_dim"])
+    if note:
+        _html_write(buffer, f"  ({note})\n", color=t["warn"])
+
+    width = len(str(max(len(entry.lines), 1)))
+    multiple = len(results) > 1
+    for n, item in enumerate(results, start=1):
+        if multiple:
+            _html_write(buffer, f"  -- match {n}/{len(results)} --\n", color=t["fg_dim"])
+        if item[0] == "single":
+            _, line_no, line_text, spans = item
+            _html_write_match_line(buffer, t, line_no, line_text, spans, width, indent="  ")
+        else:
+            _, start_no, end_no, per_line = item
+            _html_write(buffer, f"  Lines {start_no}-{end_no}:\n", color=t["accent"], bold=True)
+            for li_no, line_text, spans in per_line:
+                _html_write_match_line(buffer, t, li_no, line_text, spans, width, indent="    ")
+
+
+# --------------------------------------------------------------------------
 # MAIN WINDOW
 # --------------------------------------------------------------------------
 class FinderWindow(QMainWindow):
@@ -2275,26 +2344,13 @@ class FinderWindow(QMainWindow):
         if not self.state.is_loaded():
             self._info("No files loaded", "Add at least one file first.")
             return
-
-        # auto_reload_check() stats (and possibly re-reads) every loaded
-        # file from disk on every single search - with several/large
-        # files that disk I/O was the other big source of the "search
-        # freezes the window" reports, since it ran synchronously on the
-        # UI thread before any regex matching even started.
-        def work():
-            core.auto_reload_check(self.state)
-
-        def done(_):
-            self._refresh_file_list()
-            mode = self._mode_value()
-            if mode == "one":
-                self._search_one_line()
-            elif mode == "multi":
-                self._search_multi_line()
-            else:
-                self._search_line_range()
-
-        self._run_busy(work, done, "Checking files for changes...")
+        mode = self._mode_value()
+        if mode == "one":
+            self._search_one_line()
+        elif mode == "multi":
+            self._search_multi_line()
+        else:
+            self._search_line_range()
 
     def _t(self):
         return self._effective_theme()
@@ -2334,15 +2390,33 @@ class FinderWindow(QMainWindow):
         pattern = re.compile(re.escape(term), flags)
         self.state.last_search = f"one: '{term}'"
 
-        self._clear_results()
-        total, files_hit = 0, 0
-        for i, entry in enumerate(self.state.files, start=1):
-            results = core._find_matches(entry.lines, pattern, multiline=False)
-            if results:
-                total += len(results)
-                files_hit += 1
-            self._render_file_card(i, len(self.state.files), entry, results)
-        self._finish_search(total, files_hit)
+        t = self._t()
+        state = self.state
+
+        # Its own background thread: auto-reload-from-disk, matching, and
+        # HTML building all happen off the UI thread. Only the final
+        # buffer touches a widget, in done() below, on the UI thread.
+        def work():
+            core.auto_reload_check(state)
+            files = state.files
+            buffer = []
+            total, files_hit = 0, 0
+            for i, entry in enumerate(files, start=1):
+                results = core._find_matches(entry.lines, pattern, multiline=False)
+                if results:
+                    total += len(results)
+                    files_hit += 1
+                _html_render_file_card(buffer, t, i, len(files), entry, results)
+            return buffer, total, files_hit
+
+        def done(result):
+            buffer, total, files_hit = result
+            self._refresh_file_list()
+            self._clear_results()
+            self._results_buffer = buffer
+            self._finish_search(total, files_hit)
+
+        self._run_busy(work, done, "Searching...")
 
     def _search_multi_line(self):
         snippet = self.query_multiline.toPlainText()
@@ -2366,16 +2440,31 @@ class FinderWindow(QMainWindow):
                     pattern_stripped_snippet = None
 
         self.state.last_search = f"multi: {snippet!r}"
-        self._clear_results()
-        total, files_hit = 0, 0
-        for i, entry in enumerate(self.state.files, start=1):
-            results, note = core._search_file_with_comment_fallback(
-                entry, pattern_as_typed, pattern_stripped_snippet)
-            if results:
-                total += len(results)
-                files_hit += 1
-            self._render_file_card(i, len(self.state.files), entry, results, note=note)
-        self._finish_search(total, files_hit)
+        t = self._t()
+        state = self.state
+
+        def work():
+            core.auto_reload_check(state)
+            files = state.files
+            buffer = []
+            total, files_hit = 0, 0
+            for i, entry in enumerate(files, start=1):
+                results, note = core._search_file_with_comment_fallback(
+                    entry, pattern_as_typed, pattern_stripped_snippet)
+                if results:
+                    total += len(results)
+                    files_hit += 1
+                _html_render_file_card(buffer, t, i, len(files), entry, results, note=note)
+            return buffer, total, files_hit
+
+        def done(result):
+            buffer, total, files_hit = result
+            self._refresh_file_list()
+            self._clear_results()
+            self._results_buffer = buffer
+            self._finish_search(total, files_hit)
+
+        self._run_busy(work, done, "Searching...")
 
     def _search_line_range(self):
         entry = self._pick_range_file()
@@ -2391,6 +2480,9 @@ class FinderWindow(QMainWindow):
             self._error("Out of bounds", f"File only has {len(entry.lines)} lines.")
             return
 
+        path = entry.path
+        state = self.state
+
         # A big range (e.g. an entire large file) still froze the window
         # even after buffering: building one <span> pair of HTML per line
         # for tens/hundreds of thousands of lines makes QTextEdit's HTML
@@ -2399,21 +2491,28 @@ class FinderWindow(QMainWindow):
         # the body as plain text instead - the string building also runs
         # off the UI thread since it's pure Python with no widget access.
         def work():
-            width = len(str(len(entry.lines)))
-            lines = entry.lines[start - 1:end]
-            return "\n".join(
-                f"{str(start + i).rjust(width)}: {line}" for i, line in enumerate(lines)
+            core.auto_reload_check(state)
+            current = next((e for e in state.files if e.path == path), entry)
+            lo = max(1, min(start, len(current.lines)))
+            hi = max(1, min(end, len(current.lines)))
+            width = len(str(len(current.lines)))
+            lines = current.lines[lo - 1:hi]
+            body = "\n".join(
+                f"{str(lo + i).rjust(width)}: {line}" for i, line in enumerate(lines)
             )
+            return current, lo, hi, body
 
-        def done(body):
+        def done(result):
+            current, lo, hi, body = result
+            self._refresh_file_list()
             self._clear_results()
             t = self._t()
-            self._write(f"{os.path.basename(entry.path)}: lines {start}-{end}\n", color=t["secondary"], bold=True)
-            self._write(f"{entry.path}\n\n", color=t["fg_dim"])
+            self._write(f"{os.path.basename(current.path)}: lines {lo}-{hi}\n", color=t["secondary"], bold=True)
+            self._write(f"{current.path}\n\n", color=t["fg_dim"])
             self._flush_results()
             self.results.insertPlainText(body)
-            self.results_summary.setText(f"{end - start + 1} line(s) shown")
-            self._set_status(f"Showing lines {start}-{end} of {os.path.basename(entry.path)}.", "ok")
+            self.results_summary.setText(f"{hi - lo + 1} line(s) shown")
+            self._set_status(f"Showing lines {lo}-{hi} of {os.path.basename(current.path)}.", "ok")
 
         self._run_busy(work, done, "Loading line range...")
 
@@ -2426,51 +2525,6 @@ class FinderWindow(QMainWindow):
         self._info("Pick a file",
                    "Select which loaded file to show a line range from in the file list on the left.")
         return None
-
-    def _render_file_card(self, index, total, entry, results, note=None):
-        t = self._t()
-        name = os.path.basename(entry.path)
-        if not results:
-            self._write(f"  [{index}/{total}] {name} - no matches\n", color=t["fg_dim"])
-            return
-
-        count = len(results)
-        label = f"{count} match" if count == 1 else f"{count} matches"
-        self._write(f"\n[{index}/{total}] ", color=t["fg_dim"])
-        self._write(f"{name}", color=t["accent"], bold=True)
-        self._write("  -  ")
-        self._write(f"{label}\n", color=t["ok"])
-        self._write(f"  {entry.path}\n", color=t["fg_dim"])
-        if note:
-            self._write(f"  ({note})\n", color=t["warn"])
-
-        width = len(str(max(len(entry.lines), 1)))
-        multiple = len(results) > 1
-        for n, item in enumerate(results, start=1):
-            if multiple:
-                self._write(f"  -- match {n}/{len(results)} --\n", color=t["fg_dim"])
-            if item[0] == "single":
-                _, line_no, line_text, spans = item
-                self._write_match_line(line_no, line_text, spans, width, indent="  ")
-            else:
-                _, start_no, end_no, per_line = item
-                self._write(f"  Lines {start_no}-{end_no}:\n", color=t["accent"], bold=True)
-                for li_no, line_text, spans in per_line:
-                    self._write_match_line(li_no, line_text, spans, width, indent="    ")
-
-    def _write_match_line(self, line_no, line_text, spans, width, indent):
-        t = self._t()
-        num_str = str(line_no).rjust(width)
-        self._write(f"{indent}{num_str}: ", color=t["accent"])
-        if not spans:
-            self._write(f"{line_text}\n")
-            return
-        cursor = 0
-        for start, end in spans:
-            self._write(line_text[cursor:start])
-            self._write(line_text[start:end], color=t["hl_fg"], bg=t["hl_bg"], bold=True)
-            cursor = end
-        self._write(line_text[cursor:] + "\n")
 
     def _finish_search(self, total, files_hit):
         n = len(self.state.files)
