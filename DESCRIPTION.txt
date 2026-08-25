@@ -1,0 +1,22 @@
+CodeLens
+========
+
+CodeLens is a precision line & symbol search tool for any text file.
+
+It comes in two forms that share one search engine:
+
+  - CodeLensCLI.py — a self-contained terminal app (colors, tab
+    completion, no required dependencies).
+  - CodeLens.py — a glassy desktop app built with PySide6 (dark/light
+    themes, drag & drop, file preview, resizable panes).
+
+What it does:
+
+  - Finds an exact line, a whitespace-insensitive multi-line snippet,
+    or a specific range of lines inside one or many loaded files at
+    once.
+  - Always re-reads a file from disk before searching it, so it never
+    shows stale results after the file has changed.
+  - Groups results per file with match counts and highlighted matches.
+  - Lets you add, remove, reload, and reset the set of files you're
+    searching without restarting the app.
