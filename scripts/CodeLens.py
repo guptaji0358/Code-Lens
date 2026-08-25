@@ -19,14 +19,16 @@ Run:    python CodeLens.py
 """
 
 import datetime
+import faulthandler
 import json
 import math
 import os
 import re
 import sys
+import traceback
 
 from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
+    Qt, QTimer, QThread, QObject, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
     Signal, QSequentialAnimationGroup, Property, QParallelAnimationGroup,
 )
 from PySide6.QtGui import (
@@ -39,7 +41,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPlainTextEdit, QFileDialog, QSplitter, QFrame, QCheckBox,
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
 )
 
 import CodeLensCLI as core
@@ -47,14 +49,94 @@ import CodeLensCLI as core
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _resource_base_dir():
+    """
+    Directory to resolve Assets/ against. A plain `os.path.dirname(__file__)`
+    breaks once this script is frozen into an .exe (e.g. via PyInstaller):
+    __file__ then points inside the bootloader's temp extraction folder, not
+    next to the real .exe, so Assets/ silently fails to resolve and every
+    icon (including the window icon) quietly disappears. PyInstaller sets
+    sys.frozen and sys._MEIPASS specifically to let frozen apps find their
+    bundled data; fall back to the source file's folder when running as a
+    normal .py script. Source runs live in scripts/, one level below the
+    repo root that actually holds Assets/, so go up one directory in that
+    case.
+    """
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _install_global_error_handling():
+    """
+    Route every unhandled exception (main thread) through a Qt message box
+    instead of the default behavior: PyQt/PySide silently prints to stderr
+    (invisible in a --windowed build) and leaves the app either frozen or
+    dead with no explanation - the "app not responding" reports. A log file
+    next to the exe also captures the traceback for later diagnosis, and
+    faulthandler covers native/interpreter-level crashes the same way.
+    """
+    log_path = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "CodeLens_crash.log"
+    )
+    try:
+        _fh = open(log_path, "a", encoding="utf-8")
+        faulthandler.enable(_fh)
+    except OSError:
+        pass
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n{text}")
+        except OSError:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle(f"{APP_NAME} - Unexpected error")
+            box.setText("Something went wrong and the action could not finish.")
+            box.setDetailedText(text)
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec()
+        else:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+
+class _AsyncWorker(QObject):
+    """Runs one callable on a background QThread so slow disk/regex work
+    (loading many/large files, reloading, scanning big searches) can't
+    freeze the Qt event loop and trigger Windows' "Not Responding" state."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def run(self):
+        try:
+            result = self._fn()
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.finished.emit(result)
+
+
+BASE_DIR = _resource_base_dir()
 ASSETS_DIR = os.path.join(BASE_DIR, "Assets")
 ICON_DIRS = {
     "dark": os.path.join(ASSETS_DIR, "DarkModeIcons"),
     "light": os.path.join(ASSETS_DIR, "LightModeIcons"),
     "hover": os.path.join(ASSETS_DIR, "HoverIcons"),
 }
-APP_ICON_PATH = os.path.join(ASSETS_DIR, "app_icon.svg")
+APP_ICON_PATH = os.path.join(ASSETS_DIR, "app_icon.ico")
 
 # Icons whose color should follow the user's chosen accent color instead
 # of staying fixed (danger/warn/secondary icons keep their semantic
@@ -1314,6 +1396,7 @@ class FinderWindow(QMainWindow):
         self._explorer_saved_width = 300
         self.results_zoom_steps = 0
         self.shortcut_keys = load_shortcuts()
+        self._busy_threads = []  # keep QThread/worker refs alive until finished
 
         self.setWindowTitle(f"{APP_NAME} - {APP_TAGLINE}")
         self.resize(1220, 780)
@@ -1884,6 +1967,41 @@ class FinderWindow(QMainWindow):
                  if item.data(Qt.UserRole)}
         return [entry for entry in self.state.files if entry.path in paths]
 
+    # ---------------------------------------------------------- background work --
+    def _run_busy(self, work_fn, on_success, busy_text="Working..."):
+        """Run work_fn() off the UI thread; call on_success(result) back on
+        the UI thread when done. Keeps the window responsive (no "Not
+        Responding") during slow disk I/O or large regex scans."""
+        self.setCursor(Qt.WaitCursor)
+        self._set_status(busy_text, "dim")
+        self.setEnabled(False)
+
+        thread = QThread(self)
+        worker = _AsyncWorker(work_fn)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        def _cleanup():
+            self.setEnabled(True)
+            self.unsetCursor()
+            thread.quit()
+            thread.wait()
+            self._busy_threads.remove((thread, worker))
+
+        def _on_finished(result):
+            _cleanup()
+            on_success(result)
+
+        def _on_failed(tb_text):
+            _cleanup()
+            self._error("Unexpected error", tb_text)
+            self._set_status("Action failed - see error details.", "error")
+
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        self._busy_threads.append((thread, worker))
+        thread.start()
+
     # ---------------------------------------------------------- dialogs helper --
     def _dialog(self, kind, title, message, buttons=None):
         return AnimatedDialog.show(self, self._effective_theme(), self.theme, self.glass_enabled,
@@ -1918,18 +2036,27 @@ class FinderWindow(QMainWindow):
         if not paths:
             self._set_status("Nothing droppable - only local files can be added this way.", "warn")
             return
-        ok_count, fail_msgs = 0, []
-        for p in paths:
-            ok, msg = core.add_file_to_state(p, self.state)
-            if ok:
-                ok_count += 1
+        def work():
+            ok_count, fail_msgs = 0, []
+            for p in paths:
+                ok, msg = core.add_file_to_state(p, self.state)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_msgs.append(msg)
+            return ok_count, fail_msgs
+
+        def done(result):
+            ok_count, fail_msgs = result
+            self._refresh_file_list()
+            if fail_msgs:
+                self._error("Some dropped files failed to load", "\n".join(fail_msgs))
+            if ok_count:
+                self._set_status(f"Added {ok_count} file(s) via drag & drop.", "ok")
             else:
-                fail_msgs.append(msg)
-        self._refresh_file_list()
-        if fail_msgs:
-            self._error("Some dropped files failed to load", "\n".join(fail_msgs))
-        if ok_count:
-            self._set_status(f"Added {ok_count} file(s) via drag & drop.", "ok")
+                self._set_status("Ready.", "dim")
+
+        self._run_busy(work, done, "Loading dropped file(s)...")
         event.acceptProposedAction()
 
     # ---------------------------------------------------------- toolbar --
@@ -1937,18 +2064,27 @@ class FinderWindow(QMainWindow):
         paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to add")
         if not paths:
             return
-        ok_count, fail_msgs = 0, []
-        for p in paths:
-            ok, msg = core.add_file_to_state(p, self.state)
-            if ok:
-                ok_count += 1
+        def work():
+            ok_count, fail_msgs = 0, []
+            for p in paths:
+                ok, msg = core.add_file_to_state(p, self.state)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_msgs.append(msg)
+            return ok_count, fail_msgs
+
+        def done(result):
+            ok_count, fail_msgs = result
+            self._refresh_file_list()
+            if fail_msgs:
+                self._error("Some files failed to load", "\n".join(fail_msgs))
+            if ok_count:
+                self._set_status(f"Added {ok_count} file(s).", "ok")
             else:
-                fail_msgs.append(msg)
-        self._refresh_file_list()
-        if fail_msgs:
-            self._error("Some files failed to load", "\n".join(fail_msgs))
-        if ok_count:
-            self._set_status(f"Added {ok_count} file(s).", "ok")
+                self._set_status("Ready.", "dim")
+
+        self._run_busy(work, done, "Loading file(s)...")
 
     def on_remove(self):
         selected = self._selected_entries()
@@ -1983,20 +2119,29 @@ class FinderWindow(QMainWindow):
         if not self.state.is_loaded():
             self._set_status("No files loaded.", "warn")
             return
-        errors = []
-        for i, entry in enumerate(self.state.files):
-            new_entry, msg = core.load_single_file(entry.path)
-            if new_entry:
-                self.state.files[i] = new_entry
+        def work():
+            errors = []
+            new_files = list(self.state.files)
+            for i, entry in enumerate(new_files):
+                new_entry, msg = core.load_single_file(entry.path)
+                if new_entry:
+                    new_files[i] = new_entry
+                else:
+                    errors.append(msg)
+            return new_files, errors
+
+        def done(result):
+            new_files, errors = result
+            self.state.files = new_files
+            self.state.reset_search()
+            self._refresh_file_list()
+            if errors:
+                self._error("Reload finished with errors", "\n".join(errors))
+                self._set_status("Reload finished with errors.", "error")
             else:
-                errors.append(msg)
-        self.state.reset_search()
-        self._refresh_file_list()
-        if errors:
-            self._error("Reload finished with errors", "\n".join(errors))
-            self._set_status("Reload finished with errors.", "error")
-        else:
-            self._set_status(f"Reloaded {len(self.state.files)} file(s) from disk.", "ok")
+                self._set_status(f"Reloaded {len(self.state.files)} file(s) from disk.", "ok")
+
+        self._run_busy(work, done, "Reloading file(s) from disk...")
 
     def on_reset(self):
         if not self._confirm(
@@ -2277,6 +2422,7 @@ class FinderWindow(QMainWindow):
 
 
 def main():
+    _install_global_error_handling()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)

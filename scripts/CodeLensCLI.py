@@ -36,15 +36,31 @@ except ImportError:
 # COLOR / ANSI SETUP
 # --------------------------------------------------------------------------
 try:
+    # sys.stdout/sys.stderr are None when this module is imported from a
+    # no-console/windowed build (e.g. CodeLens.py frozen with PyInstaller's
+    # --windowed flag) - colorama.init() assumes a real stream and crashes
+    # trying to wrap None, which would otherwise take the whole GUI down
+    # on startup even though the GUI never prints colored terminal text.
+    if sys.stdout is None or sys.stderr is None:
+        raise RuntimeError("no console stdout/stderr to wrap")
     from colorama import Fore, Back, Style, init as _colorama_init
     _colorama_init(autoreset=True)
     _HAVE_COLORAMA = True
-except ImportError:
+except Exception:
     _HAVE_COLORAMA = False
 
-    if os.name == "nt":
+    if os.name == "nt" and sys.stdout is not None and sys.stderr is not None:
         # Enable ANSI/VT100 escape processing on modern Windows terminals.
-        os.system("")
+        # Skipped when there is no real console (e.g. this module imported
+        # by CodeLens.py's --windowed GUI build): os.system("") spawns
+        # cmd.exe to run the (empty) command, and with no console attached
+        # to inherit, Windows briefly flashes a brand-new console window
+        # into existence just to host it - the exact "console appears and
+        # disappears" symptom reported against the GUI app.
+        try:
+            os.system("")
+        except Exception:
+            pass
 
     class _Fore:
         BLACK = "\033[30m"
@@ -357,6 +373,54 @@ def _set_clipboard_text(text):
             user32.CloseClipboard()
     except Exception:
         return False
+
+
+def _set_console_icon():
+    """
+    Swaps the running console window's title-bar/taskbar icon to
+    Assets/app_icon.ico via raw ctypes calls - same self-contained,
+    no-extra-dependency approach as the clipboard helpers above. Purely
+    cosmetic, so any failure (non-Windows, headless console, missing
+    icon file) is silently ignored rather than interrupting startup.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        # A plain os.path.dirname(__file__) breaks once this script is
+        # frozen into an .exe: __file__ then points inside the
+        # bootloader's temp extraction folder, not next to the real
+        # .exe. sys.frozen / sys._MEIPASS are what PyInstaller sets for
+        # a frozen app to find its own bundled data.
+        if getattr(sys, "frozen", False):
+            base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        ico_path = os.path.join(base_dir, "Assets", "app_icon.ico")
+        if not os.path.isfile(ico_path):
+            return
+
+        WM_SETICON = 0x0080
+        ICON_SMALL, ICON_BIG = 0, 1
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        LR_DEFAULTSIZE = 0x0040
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return
+
+        for flag, size in ((ICON_SMALL, 16), (ICON_BIG, 32)):
+            hicon = user32.LoadImageW(
+                None, ico_path, IMAGE_ICON, size, size, LR_LOADFROMFILE | LR_DEFAULTSIZE
+            )
+            if hicon:
+                user32.SendMessageW(hwnd, WM_SETICON, flag, hicon)
+    except Exception:
+        pass
 
 
 def _shift_is_down():
@@ -1959,6 +2023,7 @@ def command_loop(state):
 # ENTRY POINT
 # --------------------------------------------------------------------------
 def main():
+    _set_console_icon()
     show_banner()
     state = FileState()
 
