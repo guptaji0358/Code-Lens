@@ -14,6 +14,7 @@ Run:    python CodeLensCLI.py
 import os
 import re
 import sys
+import gc
 import bisect
 import codecs
 import shutil
@@ -688,6 +689,7 @@ class FileState:
     def clear_files(self):
         self.files = []
         self.last_search = None
+        gc.collect()
 
     def paths(self):
         return [f.path for f in self.files]
@@ -1440,6 +1442,7 @@ def remove_file(state):
         del state.files[idx]
 
     state.reset_search()
+    gc.collect()
     print(C_OK + f"Removed {len(removed_names)} file(s): {', '.join(removed_names)}" + R)
     if not state.files:
         print(C_WARN + "No files remain loaded - use 'add' or 'change' to load new ones." + R)

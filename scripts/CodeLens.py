@@ -20,6 +20,7 @@ Run:    python CodeLens.py
 
 import datetime
 import faulthandler
+import gc
 import json
 import math
 import os
@@ -1482,6 +1483,33 @@ class FinderWindow(QMainWindow):
         self._refresh_file_list()
         self._set_status("Ready - press Alt+A or click Add to load a file.", "ok")
 
+        startup_paths = [p for p in sys.argv[1:] if os.path.isfile(p)]
+        if startup_paths:
+            self._load_startup_paths(startup_paths)
+
+    def _load_startup_paths(self, paths):
+        """Loads file(s) passed on the command line, e.g. from the
+        File Explorer 'Open with CodeLens' context menu."""
+        def work():
+            ok_count, fail_msgs = 0, []
+            for p in paths:
+                ok, msg = core.add_file_to_state(p, self.state)
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_msgs.append(msg)
+            return ok_count, fail_msgs
+
+        def done(result):
+            ok_count, fail_msgs = result
+            self._refresh_file_list()
+            if fail_msgs:
+                self._error("Some files failed to load", "\n".join(fail_msgs))
+            if ok_count:
+                self._set_status(f"Loaded {ok_count} file(s).", "ok")
+
+        self._run_busy(work, done, "Loading file(s)...")
+
     # ------------------------------------------------------------- UI --
     def _build_ui(self):
         self.backdrop = GlassBackdrop(self)
@@ -2207,6 +2235,7 @@ class FinderWindow(QMainWindow):
             return
         self.state.files = [e for e in self.state.files if e not in selected]
         self.state.reset_search()
+        gc.collect()
         self._refresh_file_list()
         self._set_status(f"Removed {len(selected)} file(s).", "warn")
 
@@ -2241,6 +2270,7 @@ class FinderWindow(QMainWindow):
             new_files, errors = result
             self.state.files = new_files
             self.state.reset_search()
+            gc.collect()
             self._refresh_file_list()
             if errors:
                 self._error("Reload finished with errors", "\n".join(errors))

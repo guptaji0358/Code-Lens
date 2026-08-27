@@ -22,6 +22,7 @@ import winreg
 
 from PySide6.QtCore import (
     Qt, QThread, Signal, QSize, QPropertyAnimation, QEasingCurve, QRectF, QPointF, Property,
+    QTimer,
 )
 from PySide6.QtGui import QIcon, QPainter, QColor, QLinearGradient, QFont, QPen
 from PySide6.QtWidgets import (
@@ -31,10 +32,13 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "CodeLens"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_PUBLISHER = "Robin Gupta Studio (RGSTM)"
 APP_COPYRIGHT = "Copyright \u00a9 Robin Gupta"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeLens"
+# "Open with CodeLens" File Explorer context menu, registered per-user under
+# Classes\* so it shows up for any file type without needing admin rights.
+CONTEXT_MENU_KEY = r"Software\Classes\*\shell\CodeLens"
 
 COMPONENTS = [
     ("desktop", "CodeLens", "Desktop app - glassy PySide6 GUI for searching files visually.", "CodeLens.exe"),
@@ -235,6 +239,7 @@ class InstallState:
                                          "Programs", APP_NAME)
         self.desktop_shortcut = True
         self.startmenu_shortcut = True
+        self.context_menu = True
         self.license_accepted = False
         self.launch_after = True
 
@@ -392,6 +397,11 @@ class ShortcutsPage(QWidget):
         self.startmenu_chk.setChecked(state.startmenu_shortcut)
         self.startmenu_chk.toggled.connect(lambda c: setattr(state, "startmenu_shortcut", c))
         lay.addWidget(self.startmenu_chk)
+
+        self.context_menu_chk = GlassCheckbox("Add \"Open with CodeLens\" to the right-click menu in File Explorer")
+        self.context_menu_chk.setChecked(state.context_menu)
+        self.context_menu_chk.toggled.connect(lambda c: setattr(state, "context_menu", c))
+        lay.addWidget(self.context_menu_chk)
         lay.addStretch()
 
 
@@ -423,6 +433,7 @@ class ReadyPage(QWidget):
             f"<b>Destination:</b> {self.state.install_dir}",
             f"<b>Desktop shortcut:</b> {'Yes' if self.state.desktop_shortcut else 'No'}",
             f"<b>Start Menu shortcut:</b> {'Yes' if self.state.startmenu_shortcut else 'No'}",
+            f"<b>\"Open with CodeLens\" context menu:</b> {'Yes' if self.state.context_menu else 'No'}",
         ]
         self.summary.setText("<br><br>".join(lines))
 
@@ -549,6 +560,9 @@ class InstallWorker(QThread):
             self.progress.emit(88, "Creating shortcuts...")
             self._create_shortcuts(install_dir, selected)
 
+            self.progress.emit(91, "Registering Explorer context menu...")
+            self._register_context_menu(install_dir, selected)
+
             self.progress.emit(94, "Registering uninstaller...")
             self._write_uninstall_registry(install_dir)
 
@@ -587,6 +601,23 @@ class InstallWorker(QThread):
                 sc.WorkingDirectory = os.path.dirname(target)
                 sc.IconLocation = target
                 sc.Save()
+
+    def _register_context_menu(self, install_dir, selected):
+        if not self.state.context_menu:
+            return
+        desktop_component = next((c for c in selected if c[0] == "desktop"), None)
+        if not desktop_component:
+            return
+        _key, folder_name, _desc, exe_name = desktop_component
+        target = os.path.join(install_dir, folder_name, exe_name)
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"Open with {APP_NAME}")
+                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r"\command") as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{target}" "%1"')
+        except OSError:
+            pass
 
     def _write_uninstall_registry(self, install_dir):
         # Earlier version copied the running *installer* exe itself into
@@ -864,6 +895,10 @@ class UninstallWorker(QThread):
             self.progress.emit(10, "Removing shortcuts...")
             self._remove_shortcuts(to_remove)
 
+            if any(c[0] == "desktop" for c in to_remove):
+                self.progress.emit(20, "Removing Explorer context menu...")
+                self._remove_context_menu()
+
             self.progress.emit(35, "Removing files...")
             self._remove_component_folders(to_remove)
 
@@ -905,6 +940,16 @@ class UninstallWorker(QThread):
 
         if os.path.isdir(start_menu_group) and not os.listdir(start_menu_group):
             shutil.rmtree(start_menu_group, ignore_errors=True)
+
+    def _remove_context_menu(self):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r"\command")
+        except OSError:
+            pass
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY)
+        except OSError:
+            pass
 
     def _remove_component_folders(self, components):
         for _key, folder_name, _desc, _exe in components:
@@ -962,11 +1007,20 @@ class UninstallWorker(QThread):
         with open(bat_path, "w", encoding="utf-8") as fh:
             fh.write(bat_contents)
 
+        # CREATE_NO_WINDOW and DETACHED_PROCESS are contradictory (one asks
+        # for a hidden console, the other for no console at all) - passing
+        # both together is what caused the console to flash on screen for
+        # an instant before Windows tore it back down. CREATE_NO_WINDOW
+        # alone, plus an explicit SW_HIDE startupinfo, keeps it fully
+        # invisible.
         CREATE_NO_WINDOW = 0x08000000
-        DETACHED_PROCESS = 0x00000008
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
         subprocess.Popen(
             ["cmd.exe", "/c", bat_path],
-            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
+            creationflags=CREATE_NO_WINDOW,
+            startupinfo=startupinfo,
             close_fds=True,
         )
 
@@ -1078,6 +1132,10 @@ class UninstallWindow(QMainWindow):
         self.uninstall_btn.setEnabled(True)
         self.uninstall_btn.clicked.disconnect()
         self.uninstall_btn.clicked.connect(self.close)
+        # Don't just sit there once the work is done - close on its own
+        # like the installer does, instead of waiting on a click that's
+        # easy to miss once the window's behind other apps.
+        QTimer.singleShot(2500, self.close)
 
     def _on_error(self, message):
         self.title.setText("Uninstall failed")
