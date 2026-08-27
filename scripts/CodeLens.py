@@ -1229,11 +1229,22 @@ class AnimatedDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        w, h = self.sizeHint().width(), self.sizeHint().height()
         parent = self.parent()
-        if parent is not None:
-            pg = parent.geometry()
-            w, h = self.sizeHint().width(), self.sizeHint().height()
-            self.setGeometry(pg.center().x() - w // 2, pg.center().y() - h // 2, w, h)
+        pg = parent.geometry() if parent is not None else None
+        # A parent window that hasn't actually been shown/positioned yet
+        # (e.g. a dialog fired during __init__, before the caller has
+        # called show()) can report a degenerate geometry - zero-sized,
+        # or parked at some placeholder origin. Trusting that blindly
+        # would put this dialog off-screen: modal (blocking all input)
+        # but nowhere the user could ever see or reach it. Fall back to
+        # centering on the primary screen instead.
+        if pg is not None and pg.width() > 50 and pg.height() > 50:
+            center = pg.center()
+        else:
+            screen = QApplication.primaryScreen()
+            center = screen.availableGeometry().center() if screen else QPoint(w, h)
+        self.setGeometry(center.x() - w // 2, center.y() - h // 2, w, h)
         QTimer.singleShot(0, lambda: self._play(reverse=False))
 
     @staticmethod
