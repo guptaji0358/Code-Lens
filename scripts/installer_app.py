@@ -641,7 +641,7 @@ class InstallWorker(QThread):
     def _write_launcher_vbs(self, install_dir, target):
         """
         Writes a tiny VBScript launcher and returns the wscript.exe command
-        line that invokes it. Two problems in one fix:
+        line that invokes it. Three problems, one fix:
 
         1. Windows silently cancels a ShellExecute launch of an unsigned
            .exe through a registered shell verb (the same command run via
@@ -651,14 +651,24 @@ class InstallWorker(QThread):
            heuristic gates the direct path.
         2. cmd.exe (the first fix that worked) is itself a console host,
            so `cmd /c start ...` briefly flashes a console window before
-           handing off. wscript.exe is a GUI-subsystem host - WScript.Shell
-           .Run launches the target process without ever allocating a
-           console, so there's nothing to flash.
+           handing off. wscript.exe is a GUI-subsystem host, so there's no
+           console to flash.
+        3. WScript.Shell.Run (the first wscript-based fix) does its own COM
+           Automation call to launch the target - and CodeLens enables
+           drag-and-drop (setAcceptDrops), which needs OLE initialized on
+           its own message loop. Launched that way, the two collided with
+           a native "Windows fatal exception: code 0x8001010d"
+           (RPC_E_CANTCALLOUT_ININPUTSYNCCALL) almost immediately after
+           the splash screen appeared - confirmed in CodeLens_crash.log's
+           faulthandler dump. Shell.Application.ShellExecute launches
+           through the normal shell-execution path instead (the same one
+           a double-click or Explorer's own verb dispatch uses), which
+           doesn't hit this conflict.
         """
         vbs_path = os.path.join(install_dir, "OpenWithCodeLens.vbs")
         vbs_content = (
-            'Set objShell = CreateObject("WScript.Shell")\r\n'
-            f'objShell.Run """{target}"" """ & WScript.Arguments(0) & """", 0, False\r\n'
+            'Set objShell = CreateObject("Shell.Application")\r\n'
+            f'objShell.ShellExecute "{target}", """" & WScript.Arguments(0) & """", "", "open", 1\r\n'
         )
         with open(vbs_path, "w", encoding="utf-8") as fh:
             fh.write(vbs_content)
