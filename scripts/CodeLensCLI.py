@@ -119,6 +119,63 @@ R = Style.RESET_ALL
 MAX_RANGE_CHUNK = 500
 ENCODING_ATTEMPTS = ["utf-8-sig", "utf-8", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"]
 
+# Extensions CodeLens never loads, even if explicitly picked or found while
+# walking a folder - line-accurate text search on these is meaningless, and
+# the "decode with latin-1 no matter what" fallback in read_file_smart would
+# otherwise happily turn an image or a 3D model into a wall of garbage lines.
+NON_TEXT_EXTENSIONS = {
+    # images
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tif", ".tiff",
+    ".psd", ".heic", ".heif", ".raw", ".cr2", ".nef", ".avif",
+    # 3D / CAD models
+    ".obj", ".fbx", ".glb", ".gltf", ".stl", ".3ds", ".blend", ".dae", ".ply",
+    ".max", ".c4d", ".skp", ".step", ".stp", ".iges", ".igs",
+    # audio / video
+    ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v",
+    # archives
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso",
+    # compiled binaries / libraries
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".msi", ".class", ".pyc", ".pyd", ".o",
+    # binary documents
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    # fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # misc binary data
+    ".db", ".sqlite", ".dat", ".pak",
+}
+
+
+def is_text_file(path):
+    """
+    Best-effort check for whether `path` is worth loading as text: not a
+    known non-text extension, and its first few KB don't contain a NUL
+    byte (the standard signal for binary content, and cheap to check
+    without reading the whole file).
+    """
+    if os.path.splitext(path)[1].lower() in NON_TEXT_EXTENSIONS:
+        return False
+    try:
+        with open(path, "rb") as fh:
+            chunk = fh.read(8192)
+    except OSError:
+        return True  # let the real loader surface the actual error
+    return b"\x00" not in chunk
+
+
+def collect_text_files(folder):
+    """
+    Walks `folder` recursively and returns every file path that passes
+    is_text_file, sorted for stable, predictable ordering.
+    """
+    found = []
+    for dirpath, _dirnames, filenames in os.walk(folder):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            if is_text_file(full):
+                found.append(full)
+    return sorted(found)
+
 
 def _supports_unicode_box_drawing():
     """
@@ -740,6 +797,9 @@ def load_single_file(path):
         if not os.path.isfile(path):
             return None, f"Path does not exist or is not a file: {path}"
 
+        if not is_text_file(path):
+            return None, f"Skipped '{os.path.basename(path)}' - not a text-based file."
+
         text, encoding = read_file_smart(path)
         lines = text.splitlines()
         abspath = os.path.abspath(path)
@@ -784,6 +844,31 @@ def add_file_to_state(path, state):
     state.files.append(entry)
     state.reset_search()
     return True, msg
+
+
+def add_paths_to_state(paths, state):
+    """
+    Adds a mix of file and folder paths to `state`. Folders are expanded
+    into every text-based file under them (recursively) via
+    collect_text_files - this is what powers both the GUI's Add dialog
+    and the Explorer 'Open folder with CodeLens' context menu. Returns
+    (ok_count, fail_msgs), same shape as looping add_file_to_state.
+    """
+    expanded = []
+    for p in paths:
+        if os.path.isdir(p):
+            expanded.extend(collect_text_files(p))
+        else:
+            expanded.append(p)
+
+    ok_count, fail_msgs = 0, []
+    for p in expanded:
+        ok, msg = add_file_to_state(p, state)
+        if ok:
+            ok_count += 1
+        else:
+            fail_msgs.append(msg)
+    return ok_count, fail_msgs
 
 
 # --------------------------------------------------------------------------

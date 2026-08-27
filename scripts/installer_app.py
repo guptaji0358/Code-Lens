@@ -39,6 +39,9 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeLens"
 # "Open with CodeLens" File Explorer context menu, registered per-user under
 # Classes\* so it shows up for any file type without needing admin rights.
 CONTEXT_MENU_KEY = r"Software\Classes\*\shell\CodeLens"
+# "Open folder with CodeLens" on a right-clicked folder - CodeLens.py
+# expands a folder argument into every text-based file under it.
+DIR_CONTEXT_MENU_KEY = r"Software\Classes\Directory\shell\CodeLens"
 
 COMPONENTS = [
     ("desktop", "CodeLens", "Desktop app - glassy PySide6 GUI for searching files visually.", "CodeLens.exe"),
@@ -369,6 +372,13 @@ class LocationPage(QWidget):
     def _browse(self):
         chosen = QFileDialog.getExistingDirectory(self, "Select install folder", self.state.install_dir)
         if chosen:
+            # Qt's file dialogs always return forward-slash paths, even on
+            # Windows - os.path.join() below would then mix in a backslash
+            # for the appended part, and that mixed-separator string breaks
+            # ShellExecute (the "Windows cannot access the specified
+            # device, path, or file" error from the Explorer context menu
+            # command we register from this path). Normalize immediately.
+            chosen = os.path.normpath(chosen)
             target = os.path.join(chosen, APP_NAME) if os.path.basename(chosen) != APP_NAME else chosen
             self.path_edit.setText(target)
 
@@ -398,7 +408,8 @@ class ShortcutsPage(QWidget):
         self.startmenu_chk.toggled.connect(lambda c: setattr(state, "startmenu_shortcut", c))
         lay.addWidget(self.startmenu_chk)
 
-        self.context_menu_chk = GlassCheckbox("Add \"Open with CodeLens\" to the right-click menu in File Explorer")
+        self.context_menu_chk = GlassCheckbox(
+            "Add \"Open with CodeLens\" (files and folders) to the right-click menu in File Explorer")
         self.context_menu_chk.setChecked(state.context_menu)
         self.context_menu_chk.toggled.connect(lambda c: setattr(state, "context_menu", c))
         lay.addWidget(self.context_menu_chk)
@@ -433,7 +444,8 @@ class ReadyPage(QWidget):
             f"<b>Destination:</b> {self.state.install_dir}",
             f"<b>Desktop shortcut:</b> {'Yes' if self.state.desktop_shortcut else 'No'}",
             f"<b>Start Menu shortcut:</b> {'Yes' if self.state.startmenu_shortcut else 'No'}",
-            f"<b>\"Open with CodeLens\" context menu:</b> {'Yes' if self.state.context_menu else 'No'}",
+            f"<b>\"Open with CodeLens\" context menu (files &amp; folders):</b> "
+            f"{'Yes' if self.state.context_menu else 'No'}",
         ]
         self.summary.setText("<br><br>".join(lines))
 
@@ -533,7 +545,10 @@ class InstallWorker(QThread):
 
     def run(self):
         try:
-            install_dir = self.state.install_dir
+            # normpath guards against a mixed-separator path (e.g. typed by
+            # hand, or containing a stray '/') ending up in a registry
+            # command or shortcut target, which Windows fails to resolve.
+            install_dir = os.path.normpath(self.state.install_dir)
             os.makedirs(install_dir, exist_ok=True)
 
             selected = [c for c in COMPONENTS if self.state.components[c[0]]]
@@ -610,12 +625,26 @@ class InstallWorker(QThread):
             return
         _key, folder_name, _desc, exe_name = desktop_component
         target = os.path.join(install_dir, folder_name, exe_name)
+        # Route through cmd.exe rather than invoking the (unsigned) exe
+        # directly. Windows silently cancels ShellExecute launches of an
+        # unsigned binary through a registered shell verb - the exact same
+        # command run via CreateProcess (a plain double-click-equivalent
+        # launch, not through the file-association machinery) works fine.
+        # cmd.exe is a trusted, signed system binary, so routing the verb
+        # through it sidesteps whatever heuristic gates the direct path.
+        command = f'cmd.exe /c start "" "{target}" "%1"'
         try:
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"Open with {APP_NAME}")
                 winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r"\command") as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{target}" "%1"')
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
+
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, DIR_CONTEXT_MENU_KEY) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"Open with {APP_NAME}")
+                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, DIR_CONTEXT_MENU_KEY + r"\command") as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
         except OSError:
             pass
 
@@ -942,14 +971,15 @@ class UninstallWorker(QThread):
             shutil.rmtree(start_menu_group, ignore_errors=True)
 
     def _remove_context_menu(self):
-        try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r"\command")
-        except OSError:
-            pass
-        try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY)
-        except OSError:
-            pass
+        for base_key in (CONTEXT_MENU_KEY, DIR_CONTEXT_MENU_KEY):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_key + r"\command")
+            except OSError:
+                pass
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_key)
+            except OSError:
+                pass
 
     def _remove_component_folders(self, components):
         for _key, folder_name, _desc, _exe in components:

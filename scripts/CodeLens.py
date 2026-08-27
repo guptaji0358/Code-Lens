@@ -1483,30 +1483,20 @@ class FinderWindow(QMainWindow):
         self._refresh_file_list()
         self._set_status("Ready - press Alt+A or click Add to load a file.", "ok")
 
-        startup_paths = [p for p in sys.argv[1:] if os.path.isfile(p)]
+        startup_paths = [p for p in sys.argv[1:] if os.path.isfile(p) or os.path.isdir(p)]
         if startup_paths:
             self._load_startup_paths(startup_paths)
 
     def _load_startup_paths(self, paths):
-        """Loads file(s) passed on the command line, e.g. from the
-        File Explorer 'Open with CodeLens' context menu."""
+        """Loads file(s)/folder(s) passed on the command line, e.g. from
+        the File Explorer 'Open with CodeLens' / 'Open folder with
+        CodeLens' context menu entries. Folders are expanded into every
+        text-based file under them."""
         def work():
-            ok_count, fail_msgs = 0, []
-            for p in paths:
-                ok, msg = core.add_file_to_state(p, self.state)
-                if ok:
-                    ok_count += 1
-                else:
-                    fail_msgs.append(msg)
-            return ok_count, fail_msgs
+            return core.add_paths_to_state(paths, self.state)
 
         def done(result):
-            ok_count, fail_msgs = result
-            self._refresh_file_list()
-            if fail_msgs:
-                self._error("Some files failed to load", "\n".join(fail_msgs))
-            if ok_count:
-                self._set_status(f"Loaded {ok_count} file(s).", "ok")
+            self._report_add_result(result, "startup")
 
         self._run_busy(work, done, "Loading file(s)...")
 
@@ -2167,32 +2157,36 @@ class FinderWindow(QMainWindow):
 
     def dropEvent(self, event):
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
-        paths = [p for p in paths if os.path.isfile(p)]
+        paths = [p for p in paths if os.path.isfile(p) or os.path.isdir(p)]
         if not paths:
-            self._set_status("Nothing droppable - only local files can be added this way.", "warn")
+            self._set_status("Nothing droppable - only local files/folders can be added this way.", "warn")
             return
         def work():
-            ok_count, fail_msgs = 0, []
-            for p in paths:
-                ok, msg = core.add_file_to_state(p, self.state)
-                if ok:
-                    ok_count += 1
-                else:
-                    fail_msgs.append(msg)
-            return ok_count, fail_msgs
+            return core.add_paths_to_state(paths, self.state)
 
         def done(result):
-            ok_count, fail_msgs = result
-            self._refresh_file_list()
-            if fail_msgs:
-                self._error("Some dropped files failed to load", "\n".join(fail_msgs))
-            if ok_count:
-                self._set_status(f"Added {ok_count} file(s) via drag & drop.", "ok")
-            else:
-                self._set_status("Ready.", "dim")
+            self._report_add_result(result, "drag & drop")
 
         self._run_busy(work, done, "Loading dropped file(s)...")
-        event.acceptProposedAction()
+
+    def _report_add_result(self, result, source):
+        """Shared summary for on_add / dropEvent / startup-path loads:
+        splits skipped non-text files (expected noise from a folder full
+        of images, say) from genuine load failures so only real errors
+        pop a dialog."""
+        ok_count, messages = result
+        self._refresh_file_list()
+        skipped = [m for m in messages if m.startswith("Skipped ")]
+        errors = [m for m in messages if not m.startswith("Skipped ")]
+        if errors:
+            self._error("Some files failed to load", "\n".join(errors))
+        if ok_count:
+            suffix = f" ({len(skipped)} non-text file(s) skipped)" if skipped else ""
+            self._set_status(f"Added {ok_count} file(s) via {source}.{suffix}", "ok")
+        elif skipped and not errors:
+            self._set_status(f"No text-based files found - skipped {len(skipped)} non-text file(s).", "warn")
+        elif not errors:
+            self._set_status("Ready.", "dim")
 
     # ---------------------------------------------------------- toolbar --
     def on_add(self):
@@ -2200,24 +2194,10 @@ class FinderWindow(QMainWindow):
         if not paths:
             return
         def work():
-            ok_count, fail_msgs = 0, []
-            for p in paths:
-                ok, msg = core.add_file_to_state(p, self.state)
-                if ok:
-                    ok_count += 1
-                else:
-                    fail_msgs.append(msg)
-            return ok_count, fail_msgs
+            return core.add_paths_to_state(paths, self.state)
 
         def done(result):
-            ok_count, fail_msgs = result
-            self._refresh_file_list()
-            if fail_msgs:
-                self._error("Some files failed to load", "\n".join(fail_msgs))
-            if ok_count:
-                self._set_status(f"Added {ok_count} file(s).", "ok")
-            else:
-                self._set_status("Ready.", "dim")
+            self._report_add_result(result, "Add")
 
         self._run_busy(work, done, "Loading file(s)...")
 
