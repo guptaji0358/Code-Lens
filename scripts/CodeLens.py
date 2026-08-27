@@ -50,7 +50,7 @@ import CodeLensCLI as core
 
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 def _resource_base_dir():
@@ -2001,24 +2001,56 @@ class FinderWindow(QMainWindow):
             self.file_list.setWrapping(False)
             self.file_list.setIconSize(QSize(16, 16))
             self.file_list.setSpacing(0)
-            groups = {}
+            INDENT_UNIT = "    "
+
+            # Build a real nested tree (folders containing subfolders and
+            # files) instead of one flat section per exact parent
+            # directory string, so files pulled in from "Open folder"
+            # read as an actual hierarchy - subfolders indented under
+            # their parent, not each listed as its own top-level group.
+            paths = [entry.path for entry in self.state.files]
+            try:
+                common_root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+            except ValueError:
+                common_root = None  # entries span different drives
+
+            root = {"dirs": {}, "files": []}
             for entry in self.state.files:
-                groups.setdefault(os.path.dirname(entry.path) or ".", []).append(entry)
-            for directory in sorted(groups):
-                header = QListWidgetItem(folder_icon, f"  {directory}  ({len(groups[directory])})")
-                header.setFlags(Qt.ItemIsEnabled)
-                f = header.font()
-                f.setBold(True)
-                header.setFont(f)
-                header.setForeground(QColor(t["fg_dim"]))
-                self.file_list.addItem(header)
-                for entry in groups[directory]:
+                rel = os.path.relpath(entry.path, common_root) if common_root else entry.path
+                parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+                node = root
+                for part in parts[:-1]:
+                    node = node["dirs"].setdefault(part, {"dirs": {}, "files": []})
+                node["files"].append(entry)
+
+            def count_all(node):
+                total = len(node["files"])
+                for child in node["dirs"].values():
+                    total += count_all(child)
+                return total
+
+            def render(node, depth):
+                indent = INDENT_UNIT * depth
+                for name in sorted(node["dirs"], key=str.lower):
+                    child = node["dirs"][name]
+                    header = QListWidgetItem(folder_icon, f"{indent}{name}  ({count_all(child)})")
+                    header.setFlags(Qt.ItemIsEnabled)
+                    f = header.font()
+                    f.setBold(True)
+                    header.setFont(f)
+                    header.setForeground(QColor(t["fg_dim"]))
+                    self.file_list.addItem(header)
+                    render(child, depth + 1)
+                for entry in sorted(node["files"], key=lambda e: os.path.basename(e.path).lower()):
                     size = core.format_size(os.path.getsize(entry.path)) if os.path.isfile(entry.path) else "?"
                     item = QListWidgetItem(
-                        file_icon, f"      {os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}")
+                        file_icon,
+                        f"{indent}{os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}")
                     item.setData(Qt.UserRole, entry.path)
                     item.setToolTip(entry.path)
                     self.file_list.addItem(item)
+
+            render(root, 0)
 
         else:  # "context" - detailed list (default)
             self.file_list.setViewMode(QListWidget.ListMode)

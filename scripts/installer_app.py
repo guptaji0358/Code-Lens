@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "CodeLens"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 APP_PUBLISHER = "Robin Gupta Studio (RGSTM)"
 APP_COPYRIGHT = "Copyright \u00a9 Robin Gupta"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeLens"
@@ -42,6 +42,17 @@ CONTEXT_MENU_KEY = r"Software\Classes\*\shell\CodeLens"
 # "Open folder with CodeLens" on a right-clicked folder - CodeLens.py
 # expands a folder argument into every text-based file under it.
 DIR_CONTEXT_MENU_KEY = r"Software\Classes\Directory\shell\CodeLens"
+# Right-clicking empty space *inside* an open folder (background) and
+# right-clicking empty space on the Desktop are two separate shell
+# classes from a regular folder item - both use %V (current folder)
+# rather than %1.
+DIR_BG_CONTEXT_MENU_KEY = r"Software\Classes\Directory\Background\shell\CodeLens"
+DESKTOP_BG_CONTEXT_MENU_KEY = r"Software\Classes\DesktopBackground\Shell\CodeLens"
+# Windows 11's compact context menu hides every classic/unpackaged verb
+# (ours included) behind "Show more options" unless this CLSID's
+# InprocServer32 default is blanked out - a well-known, reversible
+# per-user tweak that restores the classic full menu everywhere.
+CLASSIC_MENU_CLSID_KEY = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
 
 COMPONENTS = [
     ("desktop", "CodeLens", "Desktop app - glassy PySide6 GUI for searching files visually.", "CodeLens.exe"),
@@ -243,6 +254,7 @@ class InstallState:
         self.desktop_shortcut = True
         self.startmenu_shortcut = True
         self.context_menu = True
+        self.classic_context_menu = True
         self.license_accepted = False
         self.launch_after = True
 
@@ -413,6 +425,13 @@ class ShortcutsPage(QWidget):
         self.context_menu_chk.setChecked(state.context_menu)
         self.context_menu_chk.toggled.connect(lambda c: setattr(state, "context_menu", c))
         lay.addWidget(self.context_menu_chk)
+
+        self.classic_menu_chk = GlassCheckbox(
+            "Show it on a single right-click (restores Windows' classic full context menu everywhere, "
+            "instead of hiding it under \"Show more options\")")
+        self.classic_menu_chk.setChecked(state.classic_context_menu)
+        self.classic_menu_chk.toggled.connect(lambda c: setattr(state, "classic_context_menu", c))
+        lay.addWidget(self.classic_menu_chk)
         lay.addStretch()
 
 
@@ -444,8 +463,10 @@ class ReadyPage(QWidget):
             f"<b>Destination:</b> {self.state.install_dir}",
             f"<b>Desktop shortcut:</b> {'Yes' if self.state.desktop_shortcut else 'No'}",
             f"<b>Start Menu shortcut:</b> {'Yes' if self.state.startmenu_shortcut else 'No'}",
-            f"<b>\"Open with CodeLens\" context menu (files &amp; folders):</b> "
+            f"<b>\"Open with CodeLens\" context menu (files, folders &amp; folder background):</b> "
             f"{'Yes' if self.state.context_menu else 'No'}",
+            f"<b>Classic full context menu (single right-click, system-wide):</b> "
+            f"{'Yes' if self.state.classic_context_menu else 'No'}",
         ]
         self.summary.setText("<br><br>".join(lines))
 
@@ -617,6 +638,32 @@ class InstallWorker(QThread):
                 sc.IconLocation = target
                 sc.Save()
 
+    def _write_launcher_vbs(self, install_dir, target):
+        """
+        Writes a tiny VBScript launcher and returns the wscript.exe command
+        line that invokes it. Two problems in one fix:
+
+        1. Windows silently cancels a ShellExecute launch of an unsigned
+           .exe through a registered shell verb (the same command run via
+           plain CreateProcess - a double-click-equivalent launch, not
+           through the file-association machinery - works fine). Routing
+           through a trusted, signed system binary sidesteps whatever
+           heuristic gates the direct path.
+        2. cmd.exe (the first fix that worked) is itself a console host,
+           so `cmd /c start ...` briefly flashes a console window before
+           handing off. wscript.exe is a GUI-subsystem host - WScript.Shell
+           .Run launches the target process without ever allocating a
+           console, so there's nothing to flash.
+        """
+        vbs_path = os.path.join(install_dir, "OpenWithCodeLens.vbs")
+        vbs_content = (
+            'Set objShell = CreateObject("WScript.Shell")\r\n'
+            f'objShell.Run """{target}"" """ & WScript.Arguments(0) & """", 0, False\r\n'
+        )
+        with open(vbs_path, "w", encoding="utf-8") as fh:
+            fh.write(vbs_content)
+        return f'wscript.exe "{vbs_path}"'
+
     def _register_context_menu(self, install_dir, selected):
         if not self.state.context_menu:
             return
@@ -625,26 +672,38 @@ class InstallWorker(QThread):
             return
         _key, folder_name, _desc, exe_name = desktop_component
         target = os.path.join(install_dir, folder_name, exe_name)
-        # Route through cmd.exe rather than invoking the (unsigned) exe
-        # directly. Windows silently cancels ShellExecute launches of an
-        # unsigned binary through a registered shell verb - the exact same
-        # command run via CreateProcess (a plain double-click-equivalent
-        # launch, not through the file-association machinery) works fine.
-        # cmd.exe is a trusted, signed system binary, so routing the verb
-        # through it sidesteps whatever heuristic gates the direct path.
-        command = f'cmd.exe /c start "" "{target}" "%1"'
-        try:
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"Open with {APP_NAME}")
-                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CONTEXT_MENU_KEY + r"\command") as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
+        launcher = self._write_launcher_vbs(install_dir, target)
 
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, DIR_CONTEXT_MENU_KEY) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"Open with {APP_NAME}")
-                winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, DIR_CONTEXT_MENU_KEY + r"\command") as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command)
+        # (registry base key, label, placeholder) - %1 is "the clicked
+        # item"; %V is "the folder currently open" (used by the two
+        # background/empty-space entries, which have no clicked item).
+        verbs = [
+            (CONTEXT_MENU_KEY, f"Open with {APP_NAME}", "%1"),
+            (DIR_CONTEXT_MENU_KEY, f"Open with {APP_NAME}", "%1"),
+            (DIR_BG_CONTEXT_MENU_KEY, f"Open this folder with {APP_NAME}", "%V"),
+            (DESKTOP_BG_CONTEXT_MENU_KEY, f"Open this folder with {APP_NAME}", "%V"),
+        ]
+        try:
+            for base_key, label, placeholder in verbs:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base_key) as key:
+                    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, label)
+                    winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, target)
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base_key + r"\command") as key:
+                    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'{launcher} "{placeholder}"')
+        except OSError:
+            pass
+
+        if self.state.classic_context_menu:
+            self._enable_classic_context_menu()
+
+    def _enable_classic_context_menu(self):
+        """Blanks out the CLSID Windows 11 checks to decide whether to
+        collapse unpackaged/classic verbs under "Show more options" -
+        restoring the classic full context menu everywhere so entries
+        like ours (and everyone else's) show on a single right-click."""
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CLASSIC_MENU_CLSID_KEY) as key:
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "")
         except OSError:
             pass
 
@@ -971,7 +1030,8 @@ class UninstallWorker(QThread):
             shutil.rmtree(start_menu_group, ignore_errors=True)
 
     def _remove_context_menu(self):
-        for base_key in (CONTEXT_MENU_KEY, DIR_CONTEXT_MENU_KEY):
+        for base_key in (CONTEXT_MENU_KEY, DIR_CONTEXT_MENU_KEY,
+                          DIR_BG_CONTEXT_MENU_KEY, DESKTOP_BG_CONTEXT_MENU_KEY):
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_key + r"\command")
             except OSError:
@@ -980,6 +1040,16 @@ class UninstallWorker(QThread):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_key)
             except OSError:
                 pass
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, CLASSIC_MENU_CLSID_KEY)
+        except OSError:
+            pass
+        vbs_path = os.path.join(self.install_dir, "OpenWithCodeLens.vbs")
+        try:
+            if os.path.isfile(vbs_path):
+                os.remove(vbs_path)
+        except OSError:
+            pass
 
     def _remove_component_folders(self, components):
         for _key, folder_name, _desc, _exe in components:
