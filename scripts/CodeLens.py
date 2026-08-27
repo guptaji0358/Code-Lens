@@ -2230,9 +2230,25 @@ class FinderWindow(QMainWindow):
 
     # ---------------------------------------------------------- toolbar --
     def on_add(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to add")
-        if not paths:
+        choice = self._dialog(
+            "question", "Add",
+            "Add individual file(s), or an entire folder? Folders are expanded "
+            "into every text-based file under them, recursively - the same "
+            "thing the Explorer right-click \"Open with CodeLens\" does.",
+            buttons=[("Folder...", "folder", False), ("File(s)...", "files", True)],
+        )
+        if choice == "folder":
+            folder = QFileDialog.getExistingDirectory(self, "Select a folder to add")
+            if not folder:
+                return
+            paths = [folder]
+        elif choice == "files":
+            paths, _ = QFileDialog.getOpenFileNames(self, "Select file(s) to add")
+            if not paths:
+                return
+        else:
             return
+
         def work():
             return core.add_paths_to_state(paths, self.state)
 
