@@ -43,12 +43,14 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
+    QProgressBar,
 )
 
 import CodeLensCLI as core
 
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
+APP_VERSION = "1.2.0"
 
 
 def _resource_base_dir():
@@ -2567,6 +2569,89 @@ class FinderWindow(QMainWindow):
         self._flush_results()
 
 
+# --------------------------------------------------------------------------
+# STARTUP SPLASH
+# --------------------------------------------------------------------------
+class SplashScreen(QWidget):
+    """
+    Frameless branded splash shown while the main window is being built
+    (and, for a 'CodeLens' / 'CodeLens.exe' launch from Explorer's
+    context menu, while the picked file(s)/folder are being read off
+    disk). Always uses the dark theme's palette regardless of the
+    user's saved theme preference, the way a splash's brand identity
+    normally stays fixed rather than following in-app settings.
+    """
+
+    def __init__(self):
+        super().__init__()
+        t = THEMES["dark"]
+        self._bg_a, self._bg_b = t["bg_a"], t["bg_b"]
+        self._accent = t["accent"]
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(420, 260)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 36, 0, 28)
+        lay.setSpacing(10)
+        lay.setAlignment(Qt.AlignHCenter)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(QIcon(APP_ICON_PATH).pixmap(72, 72))
+        icon_lbl.setAlignment(Qt.AlignHCenter)
+        lay.addWidget(icon_lbl)
+
+        lay.addSpacing(6)
+
+        name_lbl = QLabel(APP_NAME)
+        name_lbl.setAlignment(Qt.AlignHCenter)
+        name_lbl.setStyleSheet(f"color: {t['fg']}; font-size: 26px; font-weight: 700; "
+                                f"font-family: '{FONT_UI}';")
+        lay.addWidget(name_lbl)
+
+        tag_lbl = QLabel(APP_TAGLINE)
+        tag_lbl.setAlignment(Qt.AlignHCenter)
+        tag_lbl.setStyleSheet(f"color: {t['fg_dim']}; font-size: 12px; font-family: '{FONT_UI}';")
+        lay.addWidget(tag_lbl)
+
+        lay.addStretch()
+
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # indeterminate - a busy pulse, no fixed step count to report
+        bar.setFixedHeight(4)
+        bar.setTextVisible(False)
+        bar.setStyleSheet(f"""
+            QProgressBar {{ background: {with_alpha(t['fg'], 30)}; border: none; border-radius: 2px; }}
+            QProgressBar::chunk {{ background: {self._accent}; border-radius: 2px; }}
+        """)
+        margined = QHBoxLayout()
+        margined.setContentsMargins(60, 0, 60, 0)
+        margined.addWidget(bar)
+        lay.addLayout(margined)
+
+        ver_lbl = QLabel(f"v{APP_VERSION}")
+        ver_lbl.setAlignment(Qt.AlignHCenter)
+        ver_lbl.setStyleSheet(f"color: {with_alpha(t['fg_dim'], 180)}; font-size: 10px; "
+                               f"font-family: '{FONT_UI}';")
+        lay.addSpacing(8)
+        lay.addWidget(ver_lbl)
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            self.move(screen.availableGeometry().center() - self.rect().center())
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        grad = QLinearGradient(0, 0, self.width(), self.height())
+        grad.setColorAt(0, QColor(self._bg_a))
+        grad.setColorAt(1, QColor(self._bg_b))
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawRoundedRect(self.rect(), 18, 18)
+
+
 def main():
     _install_global_error_handling()
     app = QApplication(sys.argv)
@@ -2580,8 +2665,22 @@ def main():
     # one QTextEdit.zoomIn()/zoomOut() make internally - so the results
     # pane's zoom controls looked like they did nothing.
     app.setFont(QFont(FONT_UI, 10))
+
+    splash = SplashScreen()
+    splash.show()
+    app.processEvents()
+
     win = FinderWindow()
-    win.show()
+
+    # Keep the splash up for a minimum stretch so it reads as an
+    # intentional brand moment rather than a one-frame flicker, even
+    # when the window builds (and, for an Explorer-launched file/folder
+    # open, the background file load kicks off) near-instantly.
+    def _reveal():
+        win.show()
+        splash.close()
+
+    QTimer.singleShot(700, _reveal)
     sys.exit(app.exec())
 
 
