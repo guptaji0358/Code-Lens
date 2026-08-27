@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import traceback
 
@@ -43,7 +44,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
-    QProgressBar,
+    QProgressBar, QMenu,
 )
 
 import CodeLensCLI as core
@@ -1642,6 +1643,8 @@ class FinderWindow(QMainWindow):
             "select to scope a line-range search. Drag & drop files here to add them."
         )
         self.file_list.itemDoubleClicked.connect(self._on_file_double_clicked)
+        self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(self._on_file_list_context_menu)
         left_layout.addWidget(self.file_list, 1)
         self.file_summary = QLabel("0 files loaded")
         self.file_summary.setObjectName("summary")
@@ -2234,6 +2237,40 @@ class FinderWindow(QMainWindow):
             self._report_add_result(result, "Add")
 
         self._run_busy(work, done, "Loading file(s)...")
+
+    def _on_file_list_context_menu(self, pos):
+        item = self.file_list.itemAt(pos)
+        if item is None or item.data(Qt.UserRole) is None:
+            return  # empty area, or a non-selectable folder-header row in tree view
+        if item not in self.file_list.selectedItems():
+            self.file_list.clearSelection()
+            item.setSelected(True)
+        selected = self._selected_entries()
+        if not selected:
+            return
+
+        menu = QMenu(self)
+        remove_label = f"Remove {len(selected)} file(s)" if len(selected) > 1 else "Remove file"
+        menu.addAction(remove_label).triggered.connect(self.on_remove)
+
+        open_with_menu = menu.addMenu("Open with")
+        editors = core.find_installed_editors()
+        if editors:
+            for name, exe_path in editors:
+                action = open_with_menu.addAction(name)
+                action.triggered.connect(
+                    lambda checked=False, e=exe_path, files=selected: self._open_with_editor(e, files))
+        else:
+            no_editors = open_with_menu.addAction("No editors found on this system")
+            no_editors.setEnabled(False)
+
+        menu.exec(self.file_list.viewport().mapToGlobal(pos))
+
+    def _open_with_editor(self, exe_path, entries):
+        try:
+            subprocess.Popen([exe_path] + [e.path for e in entries])
+        except OSError as e:
+            self._error("Couldn't launch editor", str(e))
 
     def on_remove(self):
         selected = self._selected_entries()

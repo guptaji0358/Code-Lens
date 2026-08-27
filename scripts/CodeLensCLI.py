@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import gc
+import glob
 import bisect
 import codecs
 import shutil
@@ -26,6 +27,12 @@ try:
     _HAVE_MSVCRT = True
 except ImportError:
     _HAVE_MSVCRT = False
+
+try:
+    import winreg
+    _HAVE_WINREG = True
+except ImportError:
+    _HAVE_WINREG = False
 
 try:
     import readline
@@ -175,6 +182,93 @@ def collect_text_files(folder):
             if is_text_file(full):
                 found.append(full)
     return sorted(found)
+
+
+# --------------------------------------------------------------------------
+# INSTALLED CODE EDITOR DETECTION (for the GUI's "Open with..." submenu)
+# --------------------------------------------------------------------------
+# Each candidate: (display name, exe filename, extra glob patterns to try
+# if it's not found via the registry's "App Paths" or on PATH). Patterns
+# may use environment variables (expanded with os.path.expandvars) and
+# '*' wildcards for version-numbered install folders.
+_EDITOR_CANDIDATES = [
+    ("Visual Studio Code", "Code.exe", [
+        r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+        r"%ProgramFiles%\Microsoft VS Code\Code.exe",
+        r"%ProgramFiles(x86)%\Microsoft VS Code\Code.exe",
+    ]),
+    ("VS Code Insiders", "Code - Insiders.exe", [
+        r"%LOCALAPPDATA%\Programs\Microsoft VS Code Insiders\Code - Insiders.exe",
+    ]),
+    ("Sublime Text", "sublime_text.exe", [
+        r"%ProgramFiles%\Sublime Text\sublime_text.exe",
+        r"%ProgramFiles%\Sublime Text 3\sublime_text.exe",
+        r"%ProgramFiles(x86)%\Sublime Text\sublime_text.exe",
+    ]),
+    ("Notepad++", "notepad++.exe", [
+        r"%ProgramFiles%\Notepad++\notepad++.exe",
+        r"%ProgramFiles(x86)%\Notepad++\notepad++.exe",
+    ]),
+    ("Atom", "atom.exe", [r"%LOCALAPPDATA%\atom\atom.exe"]),
+    ("Vim", "gvim.exe", [r"%ProgramFiles%\Vim\vim*\gvim.exe", r"%ProgramFiles(x86)%\Vim\vim*\gvim.exe"]),
+    ("IntelliJ IDEA", "idea64.exe", [
+        r"%ProgramFiles%\JetBrains\IntelliJ IDEA*\bin\idea64.exe",
+        r"%LOCALAPPDATA%\Programs\IntelliJ IDEA*\bin\idea64.exe",
+    ]),
+    ("PyCharm", "pycharm64.exe", [
+        r"%ProgramFiles%\JetBrains\PyCharm*\bin\pycharm64.exe",
+        r"%LOCALAPPDATA%\Programs\PyCharm*\bin\pycharm64.exe",
+    ]),
+    ("WebStorm", "webstorm64.exe", [r"%ProgramFiles%\JetBrains\WebStorm*\bin\webstorm64.exe"]),
+    ("CLion", "clion64.exe", [r"%ProgramFiles%\JetBrains\CLion*\bin\clion64.exe"]),
+    ("Visual Studio", "devenv.exe", [
+        r"%ProgramFiles%\Microsoft Visual Studio\*\*\Common7\IDE\devenv.exe",
+        r"%ProgramFiles(x86)%\Microsoft Visual Studio\*\*\Common7\IDE\devenv.exe",
+    ]),
+    ("Notepad", "notepad.exe", [r"%WINDIR%\notepad.exe"]),
+]
+
+
+def _app_paths_lookup(exe_name):
+    """Checks the registry's App Paths - the same place Windows itself
+    resolves a bare exe name typed into Run/the address bar - for both
+    per-machine and per-user installs."""
+    if not _HAVE_WINREG:
+        return None
+    subkey = r"Software\Microsoft\Windows\CurrentVersion\App Paths\%s" % exe_name
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                path, _ = winreg.QueryValueEx(key, "")
+                if path and os.path.isfile(path):
+                    return path
+        except OSError:
+            continue
+    return None
+
+
+def find_installed_editors():
+    """
+    Best-effort scan for code editors installed on this machine. Checks,
+    per candidate: the registry's App Paths, then PATH, then a handful of
+    known install-location glob patterns. Returns a list of (display
+    name, exe path) tuples for whichever candidates were actually found,
+    in the same order as _EDITOR_CANDIDATES. Cheap enough to call fresh
+    each time the GUI builds the "Open with..." submenu, but callers may
+    still want to cache the result for the process lifetime.
+    """
+    found = []
+    for name, exe_name, patterns in _EDITOR_CANDIDATES:
+        path = _app_paths_lookup(exe_name) or shutil.which(exe_name)
+        if not path:
+            for pattern in patterns:
+                matches = sorted(glob.glob(os.path.expandvars(pattern)))
+                if matches:
+                    path = matches[-1]  # highest-sorting = usually newest version
+                    break
+        if path and os.path.isfile(path):
+            found.append((name, os.path.abspath(path)))
+    return found
 
 
 def _supports_unicode_box_drawing():
