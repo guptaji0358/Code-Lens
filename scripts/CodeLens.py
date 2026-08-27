@@ -2012,10 +2012,13 @@ class FinderWindow(QMainWindow):
             # read as an actual hierarchy - subfolders indented under
             # their parent, not each listed as its own top-level group.
             paths = [entry.path for entry in self.state.files]
-            try:
-                common_root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
-            except ValueError:
-                common_root = None  # entries span different drives
+            if not paths:
+                common_root = None
+            else:
+                try:
+                    common_root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+                except ValueError:
+                    common_root = None  # entries span different drives
 
             root = {"dirs": {}, "files": []}
             for entry in self.state.files:
