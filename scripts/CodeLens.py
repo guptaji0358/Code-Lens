@@ -1488,7 +1488,16 @@ class FinderWindow(QMainWindow):
 
         startup_paths = [p for p in sys.argv[1:] if os.path.isfile(p) or os.path.isdir(p)]
         if startup_paths:
-            self._load_startup_paths(startup_paths)
+            # Deferred rather than called directly: this runs from inside
+            # __init__, before main() has called win.show() and before the
+            # window's real on-screen geometry exists. If the load hits an
+            # error and _report_add_result pops an AnimatedDialog, that
+            # dialog's showEvent positions itself off the (not-yet-valid)
+            # parent geometry - the same "modal but never actually visible"
+            # failure mode as two AnimatedDialogs firing back-to-back (see
+            # on_change). Deferring to the next event loop iteration lets
+            # the window finish showing first.
+            QTimer.singleShot(0, lambda: self._load_startup_paths(startup_paths))
 
     def _load_startup_paths(self, paths):
         """Loads file(s)/folder(s) passed on the command line, e.g. from
@@ -2319,7 +2328,16 @@ class FinderWindow(QMainWindow):
         self.state.clear_files()
         self._refresh_file_list()
         self._clear_results()
-        self.on_add()
+        # on_add() now shows its own AnimatedDialog (Files vs Folder) -
+        # calling it directly here would fire that dialog back-to-back
+        # with this method's own confirm dialog, with zero gap between
+        # one modal QDialog's exec() returning and the next one's exec()
+        # starting. That back-to-back chaining left the second dialog
+        # modal (blocking all input) but never actually faded in/became
+        # visible - a stuck, invisible-but-blocking window. Deferring to
+        # the next event loop iteration gives the first dialog's close
+        # animation/teardown a chance to fully finish first.
+        QTimer.singleShot(0, self.on_add)
 
     def on_reload(self):
         if not self.state.is_loaded():
@@ -2371,7 +2389,7 @@ class FinderWindow(QMainWindow):
             self._refresh_file_list()
             self._clear_results()
             self._set_status("All files removed - relaunching file selection.", "warn")
-            self.on_add()
+            QTimer.singleShot(0, self.on_add)  # see on_change's comment on why this is deferred
             return
 
         self.state.reset_search()
