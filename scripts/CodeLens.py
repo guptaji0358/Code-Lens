@@ -2295,8 +2295,17 @@ class FinderWindow(QMainWindow):
 
     def _sync_fs_watcher(self):
         """Rebuilds the watch list from self.state (sources + loaded
-        files) after anything changes it. Cheap relative to the scans it
-        triggers: just directory/file path bookkeeping, no disk reads."""
+        files) after anything changes it. Runs on the UI thread, so this
+        must stay cheap regardless of folder size: only the source
+        folders themselves and each loaded file's immediate directory
+        are watched, not every subdirectory. An earlier version walked
+        the whole tree here to watch every subfolder for new files -
+        that recursive os.walk ran synchronously on the UI thread on
+        every add, and on a real project folder that alone froze the
+        window for as long as collect_text_files used to. New files
+        several levels deep in a folder that has no loaded file yet are
+        picked up on the next full add/rescan rather than instantly -
+        an acceptable trade for never blocking the UI here."""
         old_dirs = self._fs_watcher.directories()
         old_files = self._fs_watcher.files()
         if old_dirs:
@@ -2304,13 +2313,7 @@ class FinderWindow(QMainWindow):
         if old_files:
             self._fs_watcher.removePaths(old_files)
 
-        dirs = set()
-        for p in self.state.sources:
-            if os.path.isdir(p):
-                dirs.add(p)
-                for dirpath, dirnames, _filenames in os.walk(p):
-                    dirnames[:] = [d for d in dirnames if d not in core._SKIP_DIR_NAMES]
-                    dirs.add(dirpath)
+        dirs = {p for p in self.state.sources if os.path.isdir(p)}
         for f in self.state.files:
             dirs.add(os.path.dirname(f.path))
 
