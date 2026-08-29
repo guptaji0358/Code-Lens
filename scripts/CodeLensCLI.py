@@ -182,19 +182,37 @@ _SKIP_DIR_NAMES = {
 }
 
 
+# Hard ceiling on how many files one folder-add will load. Without this,
+# picking a folder that's actually huge (a drive root, an unfiltered
+# Documents/Desktop tree, a monorepo) opens every file under it one at a
+# time (is_text_file's 8KB read, then a full read for every text file) -
+# no crash, no error, just a background scan that keeps running for so
+# long the app looks permanently frozen with no feedback at all. Capping
+# the walk means an add always finishes and reports back, even if the
+# folder was bigger than intended.
+MAX_FOLDER_FILES = 20000
+
+
 def collect_text_files(folder):
     """
-    Walks `folder` recursively and returns every file path that passes
-    is_text_file, sorted for stable, predictable ordering.
+    Walks `folder` recursively and returns (files, truncated): every file
+    path that passes is_text_file (sorted for stable ordering), and
+    whether MAX_FOLDER_FILES was hit before the walk finished.
     """
     found = []
+    truncated = False
     for dirpath, dirnames, filenames in os.walk(folder):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
         for name in filenames:
             full = os.path.join(dirpath, name)
             if is_text_file(full):
                 found.append(full)
-    return sorted(found)
+                if len(found) >= MAX_FOLDER_FILES:
+                    truncated = True
+                    break
+        if truncated:
+            break
+    return sorted(found), truncated
 
 
 # --------------------------------------------------------------------------
@@ -981,14 +999,21 @@ def add_paths_to_state(paths, state):
             state.sources.append(abs_p)
 
     expanded = []
+    fail_msgs = []
     for p in paths:
         if os.path.isdir(p):
-            expanded.extend(collect_text_files(p))
+            files, truncated = collect_text_files(p)
+            expanded.extend(files)
+            if truncated:
+                fail_msgs.append(
+                    f"'{os.path.basename(p) or p}' has more than {MAX_FOLDER_FILES:,} text "
+                    f"files - stopped after {MAX_FOLDER_FILES:,} rather than keep scanning "
+                    f"indefinitely. Pick a more specific subfolder for the rest.")
         else:
             expanded.append(p)
 
     index = {existing.path: i for i, existing in enumerate(state.files)}
-    ok_count, fail_msgs = 0, []
+    ok_count = 0
     for p in expanded:
         entry, msg = load_single_file(p)
         if not entry:
@@ -1061,7 +1086,8 @@ def rescan_sources(state):
     expected = set()
     for p in state.sources:
         if os.path.isdir(p):
-            expected.update(os.path.abspath(f) for f in collect_text_files(p))
+            files, _truncated = collect_text_files(p)
+            expected.update(os.path.abspath(f) for f in files)
         elif os.path.isfile(p):
             expected.add(os.path.abspath(p))
 
