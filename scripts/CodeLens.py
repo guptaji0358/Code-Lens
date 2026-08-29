@@ -1340,7 +1340,25 @@ class AnimatedDialog(QDialog):
         if buttons is None:
             buttons = [("OK", True, True)]
         dlg = AnimatedDialog(parent, t, icon_theme, glass, kind, title, message, buttons)
-        dlg.exec()
+
+        # The main window has OLE drag-and-drop enabled (setAcceptDrops),
+        # which on Windows means any other process poking this window's
+        # UI Automation/accessibility tree while a modal nested loop is
+        # running below (dlg.exec()) can hit RPC_E_CANTCALLOUT_ININPUTSYNCCALL
+        # (0x8001010d) - a native OS-level fault, not a Python exception,
+        # so it can't be caught here and has been seen wedging the whole
+        # UI thread mid-dialog. Dropping drag-accept for just the exec()
+        # call shrinks that window to zero for the one thing we control;
+        # it can't stop every external cause, but it removes this app's
+        # own contribution to the conflict.
+        accepts_drops = parent is not None and parent.acceptDrops()
+        if accepts_drops:
+            parent.setAcceptDrops(False)
+        try:
+            dlg.exec()
+        finally:
+            if accepts_drops:
+                parent.setAcceptDrops(True)
         return dlg.result_value
 
 
