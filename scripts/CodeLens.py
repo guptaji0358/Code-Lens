@@ -27,6 +27,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import traceback
 
 from PySide6.QtCore import (
@@ -110,6 +112,53 @@ def _install_global_error_handling():
             sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _excepthook
+
+
+def _install_hang_watchdog():
+    """
+    Reports say the window goes fully "Not Responding" - Windows' own
+    signal that the UI thread's message loop has actually stopped
+    pumping, not just a slow/disabled busy state. That kind of hang
+    produces no exception and no faulthandler crash (nothing faults,
+    it just never comes back), so there is nothing in the crash log to
+    diagnose it from. This starts a small always-on watchdog: a QTimer
+    on the UI thread pats a shared timestamp every 500ms, and a
+    background thread checks it every 2s. If the timestamp goes stale
+    for more than 5s, the UI thread is genuinely stuck somewhere -
+    dump every thread's exact stack to the crash log (once, not
+    repeatedly) so the next hang report comes with a real answer
+    instead of another guess.
+    """
+    log_path = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "CodeLens_crash.log"
+    )
+    last_alive = [time.monotonic()]
+    dumped = [False]
+
+    timer = QTimer()
+    timer.setInterval(500)
+    timer.timeout.connect(lambda: last_alive.__setitem__(0, time.monotonic()))
+    timer.start()
+
+    def watch():
+        while True:
+            time.sleep(2)
+            stale_for = time.monotonic() - last_alive[0]
+            if stale_for > 5 and not dumped[0]:
+                dumped[0] = True
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n"
+                                f"[hang-watchdog] UI thread unresponsive for {stale_for:.1f}s - "
+                                f"all thread stacks follow:\n")
+                        faulthandler.dump_traceback(file=f, all_threads=True)
+                except OSError:
+                    pass
+            elif stale_for <= 5:
+                dumped[0] = False  # recovered - allow reporting a future hang again
+
+    threading.Thread(target=watch, daemon=True).start()
+    return timer  # caller must keep a reference alive
 
 
 class _AsyncWorker(QObject):
@@ -2948,6 +2997,7 @@ class SplashScreen(QWidget):
 def main():
     _install_global_error_handling()
     app = QApplication(sys.argv)
+    _watchdog_timer = _install_hang_watchdog()  # noqa: F841 - keep QTimer alive
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(APP_ICON_PATH))
