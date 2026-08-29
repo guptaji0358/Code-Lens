@@ -170,13 +170,26 @@ def is_text_file(path):
     return b"\x00" not in chunk
 
 
+# Directories that are routinely huge, machine-generated, and never
+# what someone means by "open this folder" (a whole .git object store,
+# installed node_modules, build caches). Walking into them is what
+# turned "open a real project folder" into an effectively endless scan
+# that looked like a frozen/blank app - skip them outright.
+_SKIP_DIR_NAMES = {
+    ".git", ".hg", ".svn", "node_modules", "__pycache__",
+    ".venv", "venv", "env", "dist", "build", ".idea", ".vs",
+    "bin", "obj",
+}
+
+
 def collect_text_files(folder):
     """
     Walks `folder` recursively and returns every file path that passes
     is_text_file, sorted for stable, predictable ordering.
     """
     found = []
-    for dirpath, _dirnames, filenames in os.walk(folder):
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
         for name in filenames:
             full = os.path.join(dirpath, name)
             if is_text_file(full):
@@ -830,6 +843,11 @@ class FileState:
     def __init__(self):
         self.files = []          # list[LoadedFile]
         self.last_search = None
+        self.sources = []        # list[str]: every file/folder path ever
+                                  # explicitly added (Add, drag&drop,
+                                  # startup/context-menu launch). Used to
+                                  # re-derive the expected file set for
+                                  # the live filesystem-watch rescan.
 
     def is_loaded(self):
         return bool(self.files)
@@ -839,6 +857,7 @@ class FileState:
 
     def clear_files(self):
         self.files = []
+        self.sources = []
         self.last_search = None
         gc.collect()
 
@@ -947,7 +966,20 @@ def add_paths_to_state(paths, state):
     collect_text_files - this is what powers both the GUI's Add dialog
     and the Explorer 'Open folder with CodeLens' context menu. Returns
     (ok_count, fail_msgs), same shape as looping add_file_to_state.
+
+    Duplicate detection is done via a path->index map built once up
+    front, not add_file_to_state's per-call linear scan of state.files -
+    that scan is O(n) per file, so looping it over every file in a big
+    folder (an "Open folder" / "New Set" pick on a real project, easily
+    tens of thousands of files once node_modules/.git/etc. are walked)
+    made the whole add O(n^2) and could look like a permanent freeze/
+    blank explorer even though it was still (very slowly) working.
     """
+    for p in paths:
+        abs_p = os.path.abspath(p)
+        if abs_p not in state.sources:
+            state.sources.append(abs_p)
+
     expanded = []
     for p in paths:
         if os.path.isdir(p):
@@ -955,13 +987,22 @@ def add_paths_to_state(paths, state):
         else:
             expanded.append(p)
 
+    index = {existing.path: i for i, existing in enumerate(state.files)}
     ok_count, fail_msgs = 0, []
     for p in expanded:
-        ok, msg = add_file_to_state(p, state)
-        if ok:
-            ok_count += 1
-        else:
+        entry, msg = load_single_file(p)
+        if not entry:
             fail_msgs.append(msg)
+            continue
+        existing_i = index.get(entry.path)
+        if existing_i is not None:
+            state.files[existing_i] = entry
+        else:
+            index[entry.path] = len(state.files)
+            state.files.append(entry)
+        ok_count += 1
+    if ok_count:
+        state.reset_search()
     return ok_count, fail_msgs
 
 
@@ -1001,6 +1042,46 @@ def auto_reload_check(state):
             print(C_ERR + f"[auto-reload] '{os.path.basename(entry.path)}' changed but "
                            f"could not be re-read: {msg}" + R)
     return any_reloaded
+
+
+def rescan_sources(state):
+    """
+    Re-derives the expected file set from state.sources (every file/
+    folder path ever explicitly added) and syncs state.files to match:
+    files deleted on disk are dropped, files that appeared under a
+    previously-added folder are picked up, and files whose content
+    changed are reloaded via auto_reload_check. This is what a live
+    filesystem watch calls to keep the file list itself (not just file
+    contents) in sync with disk, the way a VS Code-style Explorer does.
+    Returns True if anything changed.
+    """
+    if not state.sources:
+        return False
+
+    expected = set()
+    for p in state.sources:
+        if os.path.isdir(p):
+            expected.update(os.path.abspath(f) for f in collect_text_files(p))
+        elif os.path.isfile(p):
+            expected.add(os.path.abspath(p))
+
+    changed = False
+    kept = [f for f in state.files if f.path in expected]
+    if len(kept) != len(state.files):
+        state.files = kept
+        changed = True
+
+    known = {f.path for f in state.files}
+    for p in sorted(expected - known):
+        entry, _msg = load_single_file(p)
+        if entry:
+            state.files.append(entry)
+            changed = True
+
+    if auto_reload_check(state):
+        changed = True
+
+    return changed
 
 
 def force_reload_files(state):

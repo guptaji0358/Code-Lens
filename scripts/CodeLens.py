@@ -31,7 +31,7 @@ import traceback
 
 from PySide6.QtCore import (
     Qt, QTimer, QThread, QObject, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
-    Signal, QSequentialAnimationGroup, Property, QParallelAnimationGroup,
+    Signal, QSequentialAnimationGroup, Property, QParallelAnimationGroup, QFileSystemWatcher,
 )
 from PySide6.QtGui import (
     QIcon, QPainter, QColor, QPen, QPixmap, QLinearGradient, QShortcut, QKeySequence, QFont,
@@ -180,6 +180,45 @@ def save_shortcuts(mapping):
             json.dump(mapping, fh, indent=2)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------
+# RECENT FOLDERS (devenv-style MRU: folder paths only, not every file)
+# --------------------------------------------------------------------------
+RECENT_FOLDERS_FILE = os.path.join(BASE_DIR, "recent_folders.json")
+MAX_RECENT_FOLDERS = 10
+
+
+def load_recent_folders():
+    if os.path.isfile(RECENT_FOLDERS_FILE):
+        try:
+            with open(RECENT_FOLDERS_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                return [p for p in data if isinstance(p, str)][:MAX_RECENT_FOLDERS]
+        except (OSError, json.JSONDecodeError):
+            pass
+    return []
+
+
+def save_recent_folders(folders):
+    try:
+        with open(RECENT_FOLDERS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(folders[:MAX_RECENT_FOLDERS], fh, indent=2)
+    except OSError:
+        pass
+
+
+def remember_recent_folder(folder):
+    """Pushes `folder` to the front of the persisted MRU list, like
+    Visual Studio's recent-folder list under File > Open > Folder -
+    just the folder path itself, not every file inside it."""
+    folders = load_recent_folders()
+    folder = os.path.abspath(folder)
+    folders = [f for f in folders if os.path.normcase(f) != os.path.normcase(folder)]
+    folders.insert(0, folder)
+    save_recent_folders(folders)
+    return folders[:MAX_RECENT_FOLDERS]
 
 
 def icon_path(name, theme):
@@ -1483,6 +1522,19 @@ class FinderWindow(QMainWindow):
         self._busy_threads = []  # keep QThread/worker refs alive until finished
         self._results_buffer = []
 
+        # Live solution-explorer sync: watches every folder a set of
+        # files was loaded from (plus each loaded file itself) and
+        # re-syncs the list when something changes on disk - files
+        # added/removed/edited outside the app show up without a manual
+        # Reload, the way VS Code's Explorer does.
+        self._fs_watcher = QFileSystemWatcher(self)
+        self._fs_watcher.directoryChanged.connect(self._on_fs_event)
+        self._fs_watcher.fileChanged.connect(self._on_fs_event)
+        self._fs_debounce = QTimer(self)
+        self._fs_debounce.setSingleShot(True)
+        self._fs_debounce.timeout.connect(self._do_live_rescan)
+        self._live_rescanning = False
+
         self.setWindowTitle(f"{APP_NAME} - {APP_TAGLINE}")
         self.resize(1220, 780)
         self.setMinimumSize(880, 560)
@@ -1515,6 +1567,8 @@ class FinderWindow(QMainWindow):
         the File Explorer 'Open with CodeLens' / 'Open folder with
         CodeLens' context menu entries. Folders are expanded into every
         text-based file under them."""
+        self._remember_folders(paths)
+
         def work():
             return core.add_paths_to_state(paths, self.state)
 
@@ -1582,7 +1636,9 @@ class FinderWindow(QMainWindow):
                                            tooltip="Clear the results pane")
         self.btn_details = make_tool_button("Details", "details", self.on_show_details,
                                              tooltip="View full details for every loaded file")
-        for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_reload,
+        self.btn_recent = make_tool_button("Recent", "lines", self.on_show_recent,
+                                            tooltip="Reopen a recently used folder")
+        for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
                   self.btn_reset, self.btn_clear, self.btn_details):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
@@ -2128,7 +2184,7 @@ class FinderWindow(QMainWindow):
         return [entry for entry in self.state.files if entry.path in paths]
 
     # ---------------------------------------------------------- background work --
-    def _run_busy(self, work_fn, on_success, busy_text="Working..."):
+    def _run_busy(self, work_fn, on_success, busy_text="Working...", quiet=False):
         """Run work_fn() off the UI thread; call on_success(result) back on
         the UI thread when done. Keeps the window responsive (no "Not
         Responding") during slow disk I/O or large regex scans.
@@ -2143,17 +2199,22 @@ class FinderWindow(QMainWindow):
         thread. That silently ran GUI calls (setEnabled, dialogs, text
         insertion) off the UI thread, which is undefined behavior in Qt
         and is what caused the window to lock up into unclickable
-        "label" widgets with stray Windows error beeps."""
-        self.setCursor(Qt.WaitCursor)
-        self._set_status(busy_text, "dim")
-        self.setEnabled(False)
+        "label" widgets with stray Windows error beeps.
+
+        quiet=True skips the wait-cursor/disable/status-line side effects
+        - for background syncs (the live filesystem watcher) that should
+        never block or visibly interrupt whatever the user is doing."""
+        if not quiet:
+            self.setCursor(Qt.WaitCursor)
+            self._set_status(busy_text, "dim")
+            self.setEnabled(False)
 
         thread = QThread(self)
         worker = _AsyncWorker(work_fn)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
-        self._busy_threads.append({"thread": thread, "worker": worker, "on_success": on_success})
+        self._busy_threads.append({"thread": thread, "worker": worker, "on_success": on_success, "quiet": quiet})
         worker.finished.connect(self._on_busy_finished)
         worker.failed.connect(self._on_busy_failed)
         thread.start()
@@ -2165,8 +2226,9 @@ class FinderWindow(QMainWindow):
         return None
 
     def _busy_cleanup(self, entry):
-        self.setEnabled(True)
-        self.unsetCursor()
+        if not entry["quiet"]:
+            self.setEnabled(True)
+            self.unsetCursor()
         entry["thread"].quit()
         entry["thread"].wait()
         self._busy_threads.remove(entry)
@@ -2221,6 +2283,8 @@ class FinderWindow(QMainWindow):
         if not paths:
             self._set_status("Nothing droppable - only local files/folders can be added this way.", "warn")
             return
+        self._remember_folders(paths)
+
         def work():
             return core.add_paths_to_state(paths, self.state)
 
@@ -2229,6 +2293,62 @@ class FinderWindow(QMainWindow):
 
         self._run_busy(work, done, "Loading dropped file(s)...")
 
+    def _sync_fs_watcher(self):
+        """Rebuilds the watch list from self.state (sources + loaded
+        files) after anything changes it. Cheap relative to the scans it
+        triggers: just directory/file path bookkeeping, no disk reads."""
+        old_dirs = self._fs_watcher.directories()
+        old_files = self._fs_watcher.files()
+        if old_dirs:
+            self._fs_watcher.removePaths(old_dirs)
+        if old_files:
+            self._fs_watcher.removePaths(old_files)
+
+        dirs = set()
+        for p in self.state.sources:
+            if os.path.isdir(p):
+                dirs.add(p)
+                for dirpath, dirnames, _filenames in os.walk(p):
+                    dirnames[:] = [d for d in dirnames if d not in core._SKIP_DIR_NAMES]
+                    dirs.add(dirpath)
+        for f in self.state.files:
+            dirs.add(os.path.dirname(f.path))
+
+        if dirs:
+            self._fs_watcher.addPaths(list(dirs))
+        files = [f.path for f in self.state.files]
+        if files:
+            self._fs_watcher.addPaths(files)
+
+    def _on_fs_event(self, _path=None):
+        # Coalesce bursts of events (a save touches a file and its
+        # directory's mtime, a build can touch dozens of files at once)
+        # into one rescan instead of one per signal.
+        self._fs_debounce.start(400)
+
+    def _do_live_rescan(self):
+        if self._live_rescanning:
+            self._fs_debounce.start(400)  # re-arm; a fresh change arrived mid-scan
+            return
+        if not self.state.sources:
+            return
+        self._live_rescanning = True
+
+        def work():
+            try:
+                return core.rescan_sources(self.state)
+            except OSError:
+                return False
+
+        def done(changed):
+            self._live_rescanning = False
+            if changed:
+                self._refresh_file_list()
+                self._set_status("Solution explorer updated - files changed on disk.", "dim")
+            self._sync_fs_watcher()
+
+        self._run_busy(work, done, quiet=True)
+
     def _report_add_result(self, result, source):
         """Shared summary for on_add / dropEvent / startup-path loads:
         splits skipped non-text files (expected noise from a folder full
@@ -2236,6 +2356,7 @@ class FinderWindow(QMainWindow):
         pop a dialog."""
         ok_count, messages = result
         self._refresh_file_list()
+        self._sync_fs_watcher()
         skipped = [m for m in messages if m.startswith("Skipped ")]
         errors = [m for m in messages if not m.startswith("Skipped ")]
         if errors:
@@ -2268,6 +2389,8 @@ class FinderWindow(QMainWindow):
                 return
         else:
             return
+
+        self._remember_folders(paths)
 
         def work():
             return core.add_paths_to_state(paths, self.state)
@@ -2327,7 +2450,56 @@ class FinderWindow(QMainWindow):
         self.state.reset_search()
         gc.collect()
         self._refresh_file_list()
+        self._sync_fs_watcher()
         self._set_status(f"Removed {len(selected)} file(s).", "warn")
+
+    def _remember_folders(self, paths):
+        """Records every directory in `paths` in the recent-folders MRU -
+        the folder path only (like Visual Studio's devenv recent-folder
+        list), not an entry per file it expanded into."""
+        for p in paths:
+            if os.path.isdir(p):
+                remember_recent_folder(p)
+
+    def on_show_recent(self):
+        folders = load_recent_folders()
+        menu = QMenu(self)
+        if not folders:
+            action = menu.addAction("No recent folders")
+            action.setEnabled(False)
+        else:
+            for folder in folders:
+                display = folder if len(folder) <= 60 else "..." + folder[-57:]
+                action = menu.addAction(display)
+                action.setToolTip(folder)
+                action.triggered.connect(lambda checked=False, f=folder: self._open_recent_folder(f))
+        menu.exec(self.btn_recent.mapToGlobal(self.btn_recent.rect().bottomLeft()))
+
+    def _open_recent_folder(self, folder):
+        if not os.path.isdir(folder):
+            self._error("Folder not found", f"This folder no longer exists:\n\n{folder}")
+            save_recent_folders([f for f in load_recent_folders()
+                                       if os.path.normcase(f) != os.path.normcase(folder)])
+            return
+        if self.state.files and not self._confirm(
+            "Start a new file set",
+            "This clears every currently loaded file and loads the selected recent folder. Continue?",
+            yes_label="Continue",
+        ):
+            return
+        self.state.clear_files()
+        self._refresh_file_list()
+        self._sync_fs_watcher()
+        self._clear_results()
+        self._remember_folders([folder])
+
+        def work():
+            return core.add_paths_to_state([folder], self.state)
+
+        def done(result):
+            self._report_add_result(result, "Recent")
+
+        self._run_busy(work, done, "Loading folder...")
 
     def on_change(self):
         if self.state.files and not self._confirm(
@@ -2338,6 +2510,7 @@ class FinderWindow(QMainWindow):
             return
         self.state.clear_files()
         self._refresh_file_list()
+        self._sync_fs_watcher()
         self._clear_results()
         # on_add() now shows its own AnimatedDialog (Files vs Folder) -
         # calling it directly here would fire that dialog back-to-back
