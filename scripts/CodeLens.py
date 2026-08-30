@@ -18,6 +18,7 @@ Author: Robin Gupta
 Run:    python CodeLens.py
 """
 
+import ctypes
 import datetime
 import faulthandler
 import gc
@@ -30,6 +31,33 @@ import sys
 import threading
 import time
 import traceback
+
+if sys.platform == "win32":
+    # This process declares no DPI awareness anywhere (no manifest, no
+    # SetProcessDpiAwareness call) - confirmed by grepping the whole file
+    # and the PyInstaller spec. On a scaled display, Windows then falls
+    # back to stretching this app's whole window as a bitmap for display
+    # while still doing input hit-testing against its real, unscaled
+    # coordinates - so a window can visually render in one place while
+    # only being clickable at a different, scaled-mismatched position.
+    # That reproduces exactly what was observed on a real scaled display:
+    # a dialog that's visibly present and correctly positioned by every
+    # internal (unscaled) coordinate check, keyboard-navigable, but whose
+    # buttons don't respond to a real mouse click at the spot the user
+    # actually sees them - indistinguishable from a total freeze. Must be
+    # set before QApplication (or any window) is created; must degrade
+    # silently on non-Windows/older Windows since ctypes.windll and
+    # shcore/PROCESS_PER_MONITOR_DPI_AWARE_V2 aren't universally available.
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)  # PER_MONITOR_AWARE_V2
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except (AttributeError, OSError):
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except (AttributeError, OSError):
+                pass
 
 from PySide6.QtCore import (
     Qt, QTimer, QThread, QObject, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize,
@@ -53,7 +81,7 @@ import CodeLensCLI as core
 
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 
 def _resource_base_dir():
@@ -862,19 +890,33 @@ class ShortcutsDialog(QDialog):
 
     def __init__(self, parent, t, glass, current):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # WindowStaysOnTopHint: a frameless, translucent Qt.Dialog on
+        # Windows has been observed opening genuinely behind whatever
+        # window currently has focus instead of coming to the front.
+        # Because it's still modal, that leaves it silently blocking all
+        # input to this app while sitting somewhere the user can't see or
+        # find it (it also gets no Alt+Tab entry, being frameless) -
+        # indistinguishable from a total freeze.
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # See AnimatedDialog's __init__ for why WA_TranslucentBackground is
+        # deliberately not used here: on this machine that compositing path
+        # was directly confirmed to paint nothing at all (verified by
+        # reading actual on-screen pixels), leaving an invisible-but-modal
+        # dialog that looks exactly like a hang.
         self.setModal(True)
         self.result_map = None
+
+        self.setStyleSheet(f"background: {t['bg_panel']};")
+        self.setAutoFillBackground(True)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 24, 24, 24)
         card = QFrame(self)
-        bg = with_alpha(t["bg_panel"], 235) if glass else t["bg_panel"]
+        # See AnimatedDialog's card for why this is a plain opaque
+        # background with no QGraphicsDropShadowEffect.
         card.setStyleSheet(f"""
-            QFrame {{ background: {bg}; border-radius: 16px; border: 1px solid {t['accent']}; }}
+            QFrame {{ background: {t['bg_panel']}; border-radius: 16px; border: 1px solid {t['accent']}; }}
         """)
-        apply_glass_shadow(card, blur=44, alpha=130)
         outer.addWidget(card)
 
         lay = QVBoxLayout(card)
@@ -1218,25 +1260,54 @@ class AnimatedDialog(QDialog):
 
     def __init__(self, parent, t, icon_theme, glass, kind, title, message, buttons):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # WindowStaysOnTopHint: a frameless, translucent Qt.Dialog on
+        # Windows has been observed opening genuinely behind whatever
+        # window currently has focus instead of coming to the front.
+        # Because it's still modal, that leaves it silently blocking all
+        # input to this app while sitting somewhere the user can't see or
+        # find it (it also gets no Alt+Tab entry, being frameless) -
+        # indistinguishable from a total freeze.
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # WA_TranslucentBackground makes this a layered/composited window on
+        # Windows - on this machine that compositing has been directly
+        # confirmed broken: reading the actual on-screen pixels at this
+        # dialog's coordinates while it was open showed nothing but the
+        # window behind it, uniformly, everywhere (not just the card - the
+        # whole translucent surface). The window exists, is flagged visible,
+        # sits at the right position, and is genuinely waiting for a click
+        # in its modal loop - it just never composites a single visible
+        # pixel, which is indistinguishable from a hang to the user. Falling
+        # back to a normal opaque background sidesteps that broken
+        # compositing path entirely (square corners instead of rounded, but
+        # actually visible) rather than depending on a code-level fix for a
+        # system-level rendering failure.
         self.setModal(True)
         self.result_value = None
         color = t[self.COLOR_KEYS.get(kind, "accent")]
+
+        self.setStyleSheet(f"background: {t['bg_panel']};")
+        self.setAutoFillBackground(True)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 24, 24, 24)
 
         card = QFrame(self)
         card.setObjectName("dialogCard")
-        bg = with_alpha(t["bg_panel"], 235) if glass else t["bg_panel"]
+        # Plain opaque background, no QGraphicsDropShadowEffect: this dialog
+        # no longer uses WA_TranslucentBackground (see __init__ above - that
+        # compositing was confirmed broken on this machine, rendering the
+        # whole dialog blank). QGraphicsDropShadowEffect needs the same kind
+        # of off-screen compositing pass, and applying it here reproduced
+        # the identical symptom one level down: the outer dialog painted
+        # fine, but this card - carrying every actual label/button - came
+        # out as a flat, blank rectangle. Dropping the shadow effect lets it
+        # paint as a normal, uncomposited widget.
         card.setStyleSheet(f"""
             QFrame#dialogCard {{
-                background: {bg}; border-radius: 16px;
+                background: {t['bg_panel']}; border-radius: 16px;
                 border: 1px solid {color};
             }}
         """)
-        apply_glass_shadow(card, blur=44, alpha=130)
         outer.addWidget(card)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(22, 20, 22, 18)
@@ -1317,6 +1388,8 @@ class AnimatedDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
         w, h = self.sizeHint().width(), self.sizeHint().height()
         parent = self.parent()
         pg = parent.geometry() if parent is not None else None
@@ -1334,12 +1407,54 @@ class AnimatedDialog(QDialog):
             center = screen.availableGeometry().center() if screen else QPoint(w, h)
         self.setGeometry(center.x() - w // 2, center.y() - h // 2, w, h)
         QTimer.singleShot(0, lambda: self._play(reverse=False))
+        # Safety net: this dialog starts at opacity 0 and is only ever made
+        # visible by the fade-in QPropertyAnimation above completing. That
+        # animation has been observed to silently never run/finish in some
+        # environments (seen in testing: the dialog's HWND is created and
+        # reports itself visible to Windows, but nothing is ever painted -
+        # a real screen capture showed straight through to the window
+        # behind it). Since this is a modal dialog, that leaves it stuck
+        # fully blocking input while being genuinely invisible - indistin-
+        # guishable from a hang to the user, with no exception or crash to
+        # diagnose. Force full opacity/geometry after a deadline well past
+        # the animation's own 180ms duration so the dialog can never be
+        # permanently invisible-yet-modal, regardless of why the animation
+        # didn't complete.
+        QTimer.singleShot(400, self._ensure_visible)
+
+    def _ensure_visible(self):
+        if self._opacity.opacity() < 1:
+            self._opacity.setOpacity(1)
+            w, h = self.sizeHint().width(), self.sizeHint().height()
+            parent = self.parent()
+            pg = parent.geometry() if parent is not None else None
+            if pg is not None and pg.width() > 50 and pg.height() > 50:
+                center = pg.center()
+            else:
+                screen = QApplication.primaryScreen()
+                center = screen.availableGeometry().center() if screen else QPoint(w, h)
+            self.setGeometry(center.x() - w // 2, center.y() - h // 2, w, h)
 
     @staticmethod
     def show(parent, t, icon_theme, glass, kind, title, message, buttons=None):
         if buttons is None:
             buttons = [("OK", True, True)]
         dlg = AnimatedDialog(parent, t, icon_theme, glass, kind, title, message, buttons)
+
+        # Most callers of this dialog are a toolbar button's `clicked` slot,
+        # so we're still inside that button's own mouse press/release
+        # handling when this runs. On Windows that button can be left
+        # holding an implicit mouse grab from its own click cycle; if this
+        # new dialog opens while that grab is still held, real mouse clicks
+        # keep being routed to the old button/window instead of this dialog
+        # - confirmed directly: the dialog rendered and accepted keyboard
+        # input (Tab+Enter worked) but ignored real mouse clicks entirely,
+        # the exact signature of a stale grab rather than a rendering or
+        # focus problem. Releasing whatever currently holds the mouse
+        # before showing this dialog closes that gap.
+        grabber = QWidget.mouseGrabber()
+        if grabber is not None:
+            grabber.releaseMouse()
 
         # The main window has OLE drag-and-drop enabled (setAcceptDrops),
         # which on Windows means any other process poking this window's

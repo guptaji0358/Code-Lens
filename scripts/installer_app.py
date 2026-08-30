@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "CodeLens"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 APP_PUBLISHER = "Robin Gupta Studio (RGSTM)"
 APP_COPYRIGHT = "Copyright \u00a9 Robin Gupta"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodeLens"
