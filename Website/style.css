@@ -777,6 +777,44 @@
     border-radius: 4px;
   }
 
+  /* ---- gallery: auto-cycling real screenshots, crossfade ---- */
+  .gallery { margin-top: clamp(28px, 4vw, 44px); }
+  .gallery-frame {
+    position: relative;
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+    aspect-ratio: 16 / 9.4;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface-solid);
+    box-shadow: var(--shadow);
+  }
+  .gallery-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top;
+    opacity: 0;
+    transform: scale(1.015);
+    transition: opacity 0.9s ease, transform 8s ease;
+  }
+  .gallery-img.is-active { opacity: 1; transform: scale(1); }
+  .gallery-dots { display: flex; justify-content: center; gap: 8px; margin-top: 16px; }
+  .gallery-dots button {
+    appearance: none; border: none; cursor: pointer; padding: 0;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border-strong);
+    transition: background 0.2s ease, transform 0.2s ease;
+  }
+  .gallery-dots button.is-active { background: var(--accent); transform: scale(1.3); }
+  @media (prefers-reduced-motion: reduce) {
+    .gallery-img { transition: opacity 0.4s ease; transform: none; }
+  }
+
   /* ---- top nav ---- */
   .topnav {
     position: sticky;
@@ -827,7 +865,15 @@
   .dl-tab:not(.is-active):hover { color: var(--text); }
 
   /* ---- downloads: one row per released version ---- */
-  .downloads-list { display: grid; gap: 12px; }
+  .downloads-list { display: grid; gap: 12px; animation: tab-fade-in 0.35s ease both; }
+  .downloads-list[hidden] { display: none; }
+  @keyframes tab-fade-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .downloads-list { animation: none; }
+  }
   .download-row {
     display: flex;
     align-items: center;
