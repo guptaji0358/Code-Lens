@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="176" height="46" viewBox="0 0 176 46" role="img" aria-label="Download">
+  <defs>
+    <linearGradient id="dlbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2130"/>
+      <stop offset="1" stop-color="#161925"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="174" height="44" rx="22" fill="url(#dlbg)" stroke="#4fd1ff" stroke-width="1.5"/>
+  <g transform="translate(26,14)" fill="none" stroke="#4fd1ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 0v12"/>
+    <path d="M4 8l5 5 5-5"/>
+    <path d="M0 15v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/>
+  </g>
+  <text x="98" y="28" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#e6e9f0">Download</text>
+</svg>

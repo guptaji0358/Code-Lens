@@ -14,6 +14,21 @@
 <div class="backdrop"></div>
 <div class="page">
 
+  <nav class="topnav">
+    <a class="topnav-mark" href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="10.5" cy="10.5" r="6.2" />
+        <line x1="15.2" y1="15.2" x2="20.5" y2="20.5" />
+      </svg>
+      CodeLens
+    </a>
+    <div class="topnav-links">
+      <a href="#">Overview</a>
+      <a href="#downloads-h">Downloads</a>
+      <a href="https://github.com/guptaji0358/Code-Lens" target="_blank" rel="noopener">Source</a>
+    </div>
+  </nav>
+
   <header class="hero">
     <div class="hero-top">
       <span class="mark">
@@ -84,15 +99,21 @@
         integration, and an uninstaller. Prefer source? See
         <a href="#layout-h" style="color:var(--accent);">Requirements</a> below.</p>
     </div>
-    <div class="downloads-list" data-reveal-group>
+
+    <div class="dl-tabs" role="tablist">
+      <button type="button" class="dl-tab is-active" data-tab="installers" role="tab" aria-selected="true">Installers</button>
+      <button type="button" class="dl-tab" data-tab="source" role="tab" aria-selected="false">Source Code</button>
+    </div>
+
+    <div class="downloads-list" data-tab-panel="installers" data-reveal-group>
       <div class="download-row latest">
         <div class="download-info">
           <span class="download-version">v1.3.3 <span class="latest-pill">Latest</span></span>
           <span class="download-desc">Fixes Windows Defender/SmartScreen blocking the installer outright — rebuilt behind NSIS's widely-trusted installer stub instead of a raw, low-reputation PyInstaller bootloader, and no longer self-extracts its payload to <code>%TEMP%</code> on every launch.</span>
         </div>
-        <a class="dl-btn" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe">
+        <a class="dl-btn" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe" aria-label="Download v1.3.3 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -100,9 +121,9 @@
           <span class="download-version">v1.3.2</span>
           <span class="download-desc">The same installer fix as v1.3.3, but shipped as a zipped folder rather than a single exe — superseded, kept here for reference.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.2/CodeLens_Setup.zip">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.2/CodeLens_Setup.zip" aria-label="Download v1.3.2 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.zip
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -110,9 +131,9 @@
           <span class="download-version">v1.3.1</span>
           <span class="download-desc">Fixes the desktop app's "New Set" dialog appearing frozen — bad transparent-window compositing, a stale mouse grab stealing clicks, and missing per-monitor DPI awareness on scaled displays.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.1/CodeLens_Setup.exe">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.1/CodeLens_Setup.exe" aria-label="Download v1.3.1 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -120,9 +141,9 @@
           <span class="download-version">v1.3.0</span>
           <span class="download-desc">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.1.0...v1.3.0" style="color:var(--accent);">full changelog</a>.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.0/CodeLens_Setup.exe">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.0/CodeLens_Setup.exe" aria-label="Download v1.3.0 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -130,9 +151,9 @@
           <span class="download-version">v1.2.0</span>
           <span class="download-desc">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.0.0...v1.2.0" style="color:var(--accent);">full changelog</a>.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.2.0/CodeLens_Setup.exe">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.2.0/CodeLens_Setup.exe" aria-label="Download v1.2.0 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -140,9 +161,9 @@
           <span class="download-version">v1.1.0</span>
           <span class="download-desc">Repo cleanup following the first public release — removed a stray scratch asset that had been committed by mistake.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.1.0/CodeLens_Setup.exe">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.1.0/CodeLens_Setup.exe" aria-label="Download v1.1.0 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
         </a>
       </div>
       <div class="download-row">
@@ -150,9 +171,82 @@
           <span class="download-version">v1.0.0</span>
           <span class="download-desc">First public release of CodeLens.</span>
         </div>
-        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.0.0/CodeLens_Setup.exe">
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.0.0/CodeLens_Setup.exe" aria-label="Download v1.0.0 installer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
-          CodeLens_Setup.exe
+          Download
+        </a>
+      </div>
+    </div>
+
+    <div class="downloads-list" data-tab-panel="source" hidden>
+      <div class="download-row latest">
+        <div class="download-info">
+          <span class="download-version">v1.3.3 <span class="latest-pill">Latest</span></span>
+          <span class="download-desc">Full source tree at this tag — both editions, installer wizard, icons, and the NSIS/PyInstaller build scripts.</span>
+        </div>
+        <a class="dl-btn" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.3.zip" aria-label="Download v1.3.3 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.2</span>
+          <span class="download-desc">Source tree at this tag.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.2.zip" aria-label="Download v1.3.2 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.1</span>
+          <span class="download-desc">Source tree at this tag.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.1.zip" aria-label="Download v1.3.1 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.0</span>
+          <span class="download-desc">Source tree at this tag.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.0.zip" aria-label="Download v1.3.0 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.2.0</span>
+          <span class="download-desc">Source tree at this tag.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.2.0.zip" aria-label="Download v1.2.0 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.1.0</span>
+          <span class="download-desc">Source tree at this tag.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.1.0.zip" aria-label="Download v1.1.0 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.0.0</span>
+          <span class="download-desc">Source tree of the first public release.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.0.0.zip" aria-label="Download v1.0.0 source code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          Download
         </a>
       </div>
     </div>
@@ -419,6 +513,19 @@ Assets/
   } else {
     document.querySelectorAll('[data-reveal], [data-reveal-group]').forEach((el) => el.classList.add('is-visible'));
   }
+
+  document.querySelectorAll('.dl-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      document.querySelectorAll('.dl-tab').forEach((t) => {
+        t.classList.toggle('is-active', t === tab);
+        t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+        panel.hidden = panel.dataset.tabPanel !== target;
+      });
+    });
+  });
 </script>
 </body>
 </html>

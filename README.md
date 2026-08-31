@@ -46,42 +46,48 @@ Prefer running from source instead? See [Requirements](#requirements) below — 
 
 Pick a version below, or jump straight to the [latest release](https://github.com/guptaji0358/Code-Lens/releases/latest).
 
+### Source code
+
+<a href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.3.zip"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a>
+
+### Installers
+
 <table>
 <tr><th align="left">Version</th><th align="left">What's in it</th><th align="left">Get it</th></tr>
 <tr>
 <td valign="top"><code>v1.3.3</code><br><sub>Latest</sub></td>
 <td valign="top">Fixes Windows Defender/SmartScreen blocking the installer outright — the Setup exe is rebuilt behind NSIS's widely-trusted installer stub instead of a raw, low-reputation PyInstaller bootloader, and no longer self-extracts its payload to <code>%TEMP%</code> on every launch.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-2ea44f?style=for-the-badge" alt="Download v1.3.3" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.3.2</code></td>
 <td valign="top">The same installer fix as v1.3.3, but shipped as a zipped folder rather than a single exe — superseded, kept here for reference.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.2/CodeLens_Setup.zip"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.zip-6e7681?style=for-the-badge" alt="Download v1.3.2" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.2/CodeLens_Setup.zip"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.3.1</code></td>
 <td valign="top">Fixes the desktop app's "New Set" dialog appearing frozen — bad transparent-window compositing, a stale mouse grab stealing clicks, and missing per-monitor DPI awareness on scaled displays.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.1/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-6e7681?style=for-the-badge" alt="Download v1.3.1" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.1/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.3.0</code></td>
 <td valign="top">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.1.0...v1.3.0">full changelog</a>.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.0/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-6e7681?style=for-the-badge" alt="Download v1.3.0" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.0/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.2.0</code></td>
 <td valign="top">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.0.0...v1.2.0">full changelog</a>.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.2.0/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-6e7681?style=for-the-badge" alt="Download v1.2.0" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.2.0/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.1.0</code></td>
 <td valign="top">Repo cleanup following the first public release — removed a stray scratch asset that had been committed by mistake.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.1.0/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-6e7681?style=for-the-badge" alt="Download v1.1.0" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.1.0/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 <tr>
 <td valign="top"><code>v1.0.0</code></td>
 <td valign="top">First public release of CodeLens.</td>
-<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.0.0/CodeLens_Setup.exe"><img src="https://img.shields.io/badge/⬇_Download-CodeLens__Setup.exe-6e7681?style=for-the-badge" alt="Download v1.0.0" /></a></td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.0.0/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
 </table>
 

@@ -777,6 +777,55 @@
     border-radius: 4px;
   }
 
+  /* ---- top nav ---- */
+  .topnav {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px clamp(20px, 5vw, 56px);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topnav-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.02rem;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .topnav-mark svg { width: 18px; height: 18px; color: var(--accent); flex: none; }
+  .topnav-links { display: flex; align-items: center; gap: clamp(14px, 3vw, 26px); }
+  .topnav-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: color 0.15s ease;
+  }
+  .topnav-links a:hover { color: var(--accent); }
+
+  /* ---- downloads: installers / source-code tab toggle ---- */
+  .dl-tabs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 100px;
+    border: 1px solid var(--border); background: var(--surface-solid); margin-bottom: 20px; }
+  .dl-tab {
+    appearance: none; border: none; cursor: pointer;
+    padding: 8px 18px; border-radius: 100px;
+    font-family: var(--font-body); font-weight: 700; font-size: 0.85rem;
+    background: transparent; color: var(--text-dim);
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+  .dl-tab.is-active { background: var(--accent); color: var(--accent-ink); }
+  .dl-tab:not(.is-active):hover { color: var(--text); }
+
   /* ---- downloads: one row per released version ---- */
   .downloads-list { display: grid; gap: 12px; }
   .download-row {
