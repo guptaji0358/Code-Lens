@@ -178,7 +178,7 @@
       </div>
     </div>
 
-    <div class="downloads-list" data-tab-panel="source" hidden>
+    <div class="downloads-list" data-tab-panel="source">
       <div class="download-row latest">
         <div class="download-info">
           <span class="download-version">v1.3.3 <span class="latest-pill">Latest</span></span>
@@ -562,24 +562,27 @@ Assets/
     frame.addEventListener('mouseleave', start);
   })();
 
-  document.querySelectorAll('.dl-tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      const target = tab.dataset.tab;
-      document.querySelectorAll('.dl-tab').forEach((t) => {
-        t.classList.toggle('is-active', t === tab);
-        t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
-      });
-      document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
-        const show = panel.dataset.tabPanel === target;
-        panel.hidden = !show;
-        if (show) {
-          panel.style.animation = 'none';
-          void panel.offsetWidth;
-          panel.style.animation = '';
-        }
-      });
+  function showDownloadsTab(target) {
+    document.querySelectorAll('.dl-tab').forEach((t) => {
+      const active = t.dataset.tab === target;
+      t.classList.toggle('is-active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+      const show = panel.dataset.tabPanel === target;
+      panel.style.display = show ? 'grid' : 'none';
+      if (show) {
+        panel.style.animation = 'none';
+        void panel.offsetWidth;
+        panel.style.animation = '';
+      }
+    });
+  }
+
+  document.querySelectorAll('.dl-tab').forEach((tab) => {
+    tab.addEventListener('click', () => showDownloadsTab(tab.dataset.tab));
   });
+  showDownloadsTab('installers');
 </script>
 </body>
 </html>
