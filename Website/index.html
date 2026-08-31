@@ -76,6 +76,88 @@
     </div>
   </header>
 
+  <section class="downloads" aria-labelledby="downloads-h" data-reveal>
+    <div class="section-head">
+      <span class="eyebrow">Downloads</span>
+      <h2 id="downloads-h">Every release, and what's in it.</h2>
+      <p>No Python install required — the Windows installer bundles both editions, Explorer
+        integration, and an uninstaller. Prefer source? See
+        <a href="#layout-h" style="color:var(--accent);">Requirements</a> below.</p>
+    </div>
+    <div class="downloads-list" data-reveal-group>
+      <div class="download-row latest">
+        <div class="download-info">
+          <span class="download-version">v1.3.3 <span class="latest-pill">Latest</span></span>
+          <span class="download-desc">Fixes Windows Defender/SmartScreen blocking the installer outright — rebuilt behind NSIS's widely-trusted installer stub instead of a raw, low-reputation PyInstaller bootloader, and no longer self-extracts its payload to <code>%TEMP%</code> on every launch.</span>
+        </div>
+        <a class="dl-btn" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.2</span>
+          <span class="download-desc">The same installer fix as v1.3.3, but shipped as a zipped folder rather than a single exe — superseded, kept here for reference.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.2/CodeLens_Setup.zip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.zip
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.1</span>
+          <span class="download-desc">Fixes the desktop app's "New Set" dialog appearing frozen — bad transparent-window compositing, a stale mouse grab stealing clicks, and missing per-monitor DPI awareness on scaled displays.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.1/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.3.0</span>
+          <span class="download-desc">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.1.0...v1.3.0" style="color:var(--accent);">full changelog</a>.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.0/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.2.0</span>
+          <span class="download-desc">Incremental release — see the <a href="https://github.com/guptaji0358/Code-Lens/compare/v1.0.0...v1.2.0" style="color:var(--accent);">full changelog</a>.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.2.0/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.1.0</span>
+          <span class="download-desc">Repo cleanup following the first public release — removed a stray scratch asset that had been committed by mistake.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.1.0/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+      <div class="download-row">
+        <div class="download-info">
+          <span class="download-version">v1.0.0</span>
+          <span class="download-desc">First public release of CodeLens.</span>
+        </div>
+        <a class="dl-btn secondary" href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.0.0/CodeLens_Setup.exe">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+          CodeLens_Setup.exe
+        </a>
+      </div>
+    </div>
+  </section>
+
   <section class="showcase" aria-labelledby="showcase-h">
     <div class="section-head" style="text-align:center; margin-inline:auto;">
       <span class="eyebrow">The real app</span>

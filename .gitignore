@@ -3,3 +3,6 @@ Installer
 out
 *.spec
 build/
+dist/
+dist_tmp/
+build_tmp/

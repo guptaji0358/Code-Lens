@@ -776,3 +776,44 @@
     outline-offset: 3px;
     border-radius: 4px;
   }
+
+  /* ---- downloads: one row per released version ---- */
+  .downloads-list { display: grid; gap: 12px; }
+  .download-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 18px 22px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface-solid);
+    transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .download-row:hover { transform: translateY(-3px); border-color: var(--border-strong); box-shadow: var(--shadow); }
+  .download-row.latest { border-color: var(--accent); }
+  .download-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 320px; }
+  .download-version {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--font-mono); font-weight: 700; color: var(--text); font-size: 0.95rem;
+  }
+  .latest-pill {
+    font-family: var(--font-body); font-size: 0.66rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 3px 9px; border-radius: 100px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+  }
+  .download-desc { color: var(--text-dim); font-size: 0.9rem; max-width: 62ch; }
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 8px; flex: none;
+    padding: 11px 20px; border-radius: 10px;
+    font-weight: 700; font-size: 0.85rem;
+    background: var(--accent); color: var(--accent-ink);
+    text-decoration: none; white-space: nowrap;
+    transition: transform 0.2s ease, filter 0.2s ease;
+  }
+  .dl-btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
+  .dl-btn svg { width: 16px; height: 16px; flex: none; }
+  .dl-btn.secondary { background: var(--surface-strong); color: var(--text); border: 1px solid var(--border-strong); }
