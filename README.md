@@ -14,6 +14,7 @@ and a glassy PySide6 desktop app, sharing one search engine.
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-d97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PySide6/)
+[![Downloads](https://img.shields.io/github/downloads/guptaji0358/Code-Lens/total?style=for-the-badge&color=blue)](https://github.com/guptaji0358/Code-Lens/releases/latest)
 
 <br>
 
@@ -27,6 +28,22 @@ CodeLens exists to avoid the search limitations, spacing bugs, missing line numb
 stale-file caching of editor "Find" boxes (Visual Studio's Ctrl+F was the original pain point).
 Every search auto-reloads the file from disk first, so edits saved elsewhere are always
 reflected immediately.
+
+<br>
+
+## Downloads
+
+Grab the latest Windows build from the [**Releases**](https://github.com/guptaji0358/Code-Lens/releases/latest) page — no Python install required.
+
+The installer (built with the `installer_app.py` wizard, packaged via PyInstaller) gives you:
+
+- **CodeLens.exe** — the frozen desktop app (PySide6 GUI), no interpreter needed.
+- **CodeLensCLI.exe** — the frozen terminal edition.
+- **Explorer integration** — adds "Open with CodeLens" and "Open folder with CodeLens" to the right-click context menu.
+- **An uninstaller** — run `installer_app.py --uninstall` (or the packaged uninstaller) to cleanly remove the app and its registry entries.
+- **Assets/** — icons and other resources the app needs at runtime, bundled alongside the executables.
+
+Prefer running from source instead? See [Requirements](#requirements) below — just Python 3.9+ and (for the desktop edition) `pip install PySide6`.
 
 <br>
 
