@@ -815,6 +815,27 @@
     .gallery-img { transition: opacity 0.4s ease; transform: none; }
   }
 
+  /* ---- see it in action: playable GIF cards ---- */
+  .in-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+  @media (max-width: 720px) { .in-action-grid { grid-template-columns: 1fr; } }
+  .gif-card {
+    margin: 0;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: var(--surface-solid);
+    overflow: hidden;
+    transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .gif-card:hover { transform: translateY(-4px); border-color: var(--border-strong); box-shadow: var(--shadow); }
+  .gif-card img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--border); }
+  .gif-card figcaption { padding: 16px 18px; }
+  .gif-card h4 { font-size: 1rem; margin-bottom: 4px; }
+  .gif-card p { margin: 0; font-size: 0.88rem; color: var(--text-dim); }
+
   /* ---- top nav ---- */
   .topnav {
     position: sticky;
