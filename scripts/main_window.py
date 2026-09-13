@@ -104,6 +104,9 @@ class FinderWindow(QMainWindow):
         self.glass_enabled = True
         self.custom_accent = None  # None = use theme's default accent
         self.view_mode = "context"
+        self._view_refresh_gen = 0  # bumped on every view-mode switch; guards against a stale
+                                     # background Group-By tree computation (see
+                                     # _on_view_mode_change) landing after the user switched away
         self.hide_unsupported = load_view_settings()["hide_unsupported"]
         self._active_extensions = None  # None = no filter, show every extension
         self._collapsed_groups = set()  # relative folder-path tuples collapsed in Group-by-folder view
@@ -778,7 +781,83 @@ class FinderWindow(QMainWindow):
         item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
         item.setToolTip(self._VIEW_ONLY_TIP)
 
-    def _refresh_file_list(self):
+    @staticmethod
+    def _build_group_tree(all_shown):
+        """
+        Pure-data half of the "path" (Group By) view: buckets `all_shown`
+        (LoadedFile entries) into a nested {"dirs": {name: node, ...},
+        "files": [...]} tree by folder, with no Qt objects touched -
+        safe to run on a background thread. The other half (turning this
+        tree into QListWidgetItem/TreeGuideRow widgets) stays on the UI
+        thread inside _refresh_file_list, since Qt widgets can only be
+        created there regardless of where the data came from.
+        """
+        paths = [entry.path for entry in all_shown]
+        if not paths:
+            common_root = None
+        else:
+            try:
+                common_root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+            except ValueError:
+                common_root = None  # entries span different drives
+
+        root = {"dirs": {}, "files": []}
+        for entry in all_shown:
+            rel = os.path.relpath(entry.path, common_root) if common_root else entry.path
+            parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
+            node = root
+            for part in parts[:-1]:
+                node = node["dirs"].setdefault(part, {"dirs": {}, "files": []})
+            node["files"].append(entry)
+        return root
+
+    def _on_view_mode_change(self, button, checked):
+        if not checked:
+            return
+        for value, b in self.view_buttons.items():
+            if b is button:
+                self.view_mode = value
+                break
+
+        # Bump the generation counter unconditionally so any group-tree
+        # computation already in flight from a previous click is ignored
+        # when it finishes (see _on_group_tree_ready) instead of clobbering
+        # whatever the user switched to since - this is what makes rapid
+        # Grid <-> Group By clicking safe rather than racing renders.
+        self._view_refresh_gen += 1
+        gen = self._view_refresh_gen
+
+        if self.view_mode != "path":
+            self._refresh_file_list()
+            return
+
+        # Group By needs to bucket every shown file/folder into a nested
+        # tree before it can render a single row - on a folder with many
+        # thousands of files that categorization (not the widget creation
+        # itself) was the one part of a view switch actually heavy enough
+        # to matter, so it runs off the UI thread while the list clears
+        # and shows a lightweight "Grouping..." placeholder immediately
+        # rather than waiting for the full tree with the old view frozen
+        # on screen.
+        self.file_list.clear()
+        self.file_summary.setText("Grouping files by folder...")
+
+        shown = [e for e in self.state.files if self._entry_passes_filter(e)]
+        shown_display = [] if self.hide_unsupported else \
+            [e for e in self.state.display_files if self._entry_passes_filter(e)]
+        all_shown = shown + shown_display
+
+        def work():
+            return self._build_group_tree(all_shown)
+
+        def done(root):
+            if gen != self._view_refresh_gen:
+                return  # user switched views again before this finished - discard
+            self._refresh_file_list(precomputed_group_tree=root)
+
+        self._run_busy(work, done, quiet=True)
+
+    def _refresh_file_list(self, precomputed_group_tree=None):
         """
         Renders self.state.files (editable, searchable) and
         self.state.display_files (view-only - unsupported files kept
@@ -863,24 +942,17 @@ class FinderWindow(QMainWindow):
             # directory string, so files pulled in from "Open folder"
             # read as an actual hierarchy - subfolders indented under
             # their parent, not each listed as its own top-level group.
-            all_shown = shown + shown_display
-            paths = [entry.path for entry in all_shown]
-            if not paths:
-                common_root = None
+            # This bucketing is pure data work with no Qt objects
+            # involved, so _on_view_mode_change runs it on a background
+            # thread and hands the finished tree in here via
+            # precomputed_group_tree - every other caller of
+            # _refresh_file_list (search, filter/hide-unsupported
+            # toggles, live rescan, ...) still needs the list to reflect
+            # the new state immediately, so it's computed inline for them.
+            if precomputed_group_tree is not None:
+                root = precomputed_group_tree
             else:
-                try:
-                    common_root = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
-                except ValueError:
-                    common_root = None  # entries span different drives
-
-            root = {"dirs": {}, "files": []}
-            for entry in all_shown:
-                rel = os.path.relpath(entry.path, common_root) if common_root else entry.path
-                parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
-                node = root
-                for part in parts[:-1]:
-                    node = node["dirs"].setdefault(part, {"dirs": {}, "files": []})
-                node["files"].append(entry)
+                root = self._build_group_tree(shown + shown_display)
 
             def count_all(node):
                 total = len(node["files"])
@@ -1053,15 +1125,6 @@ class FinderWindow(QMainWindow):
             # signal instead.
             label.setSelected(selected, t["fg"])
             row.setSelected(selected, t["accent"])
-
-    def _on_view_mode_change(self, button, checked):
-        if not checked:
-            return
-        for value, b in self.view_buttons.items():
-            if b is button:
-                self.view_mode = value
-                break
-        self._refresh_file_list()
 
     def _selected_entries(self):
         """Loaded files currently selected in the file list, resolved by
