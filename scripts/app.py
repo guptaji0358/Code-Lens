@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, Q
 from theme import THEMES, APP_ICON_PATH, FONT_UI, with_alpha
 from main_window import FinderWindow, APP_NAME, APP_TAGLINE
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "2.0.0"
 
 
 def _install_global_error_handling():
