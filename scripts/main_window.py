@@ -85,15 +85,20 @@ class _AsyncWorker(QObject):
         return self._cancel_event.is_set()
 
     def run(self):
+        # Every exit path emits exactly one of finished/failed - the UI
+        # side's cleanup (hiding the overlay, re-enabling the window) runs
+        # off whichever signal arrives, so a work_fn that raised something
+        # this didn't anticipate must never fall through without emitting
+        # anything, or the overlay would be stuck on screen forever with
+        # no signal ever telling the UI thread the task is over.
         try:
             if self._wants_progress:
                 result = self._fn(self.progress.emit, self.is_cancelled)
             else:
                 result = self._fn()
+            self.finished.emit(result)
         except Exception:
             self.failed.emit(traceback.format_exc())
-        else:
-            self.finished.emit(result)
 
 
 class FinderWindow(QMainWindow):
@@ -117,6 +122,9 @@ class FinderWindow(QMainWindow):
         self.results_zoom_steps = 0
         self.shortcut_keys = load_shortcuts()
         self._busy_threads = []  # keep QThread/worker refs alive until finished
+        self._busy_ui_active = False  # True while the shared BusyOverlay/disabled-window
+                                       # state belongs to some non-quiet _run_busy call -
+                                       # guards against a second one stacking on top of it
         self._results_buffer = []
 
         # Live solution-explorer sync: watches every folder a set of
@@ -640,31 +648,52 @@ class FinderWindow(QMainWindow):
             "case_sensitive": lambda: self.case_chk.setChecked(not self.case_chk.isChecked()),
         }
         self._shortcut_objs = {}
+        self._all_shortcuts = []  # every QShortcut, editable or fixed - see _set_shortcuts_enabled
         for key, _label, default in SHORTCUT_ACTIONS:
             sc = QShortcut(QKeySequence(self.shortcut_keys.get(key, default)), self)
             sc.activated.connect(handlers[key])
             self._shortcut_objs[key] = sc
+            self._all_shortcuts.append(sc)
         # Numpad Enter sends a different key than the main Return key in
         # Qt, so Ctrl+Enter needs its own (non-editable) binding to the
         # same search action alongside the editable "search" shortcut.
         numpad = QShortcut(QKeySequence("Ctrl+Enter"), self)
         numpad.activated.connect(self.on_search)
         self._shortcut_objs["search_numpad"] = numpad
+        self._all_shortcuts.append(numpad)
 
         # Results zoom - fixed, not part of the editable shortcut list.
         for seq in ("Ctrl+=", "Ctrl++"):
             sc = QShortcut(QKeySequence(seq), self)
             sc.activated.connect(self.on_zoom_in)
-        QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self.on_zoom_out)
-        QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self.on_zoom_reset)
+            self._all_shortcuts.append(sc)
+        for seq, slot in (("Ctrl+-", self.on_zoom_out), ("Ctrl+0", self.on_zoom_reset)):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(slot)
+            self._all_shortcuts.append(sc)
 
         # Search mode switching - fixed, not part of the editable shortcut list.
-        QShortcut(QKeySequence("Ctrl+1"), self).activated.connect(lambda: self._set_search_mode("one"))
-        QShortcut(QKeySequence("Ctrl+2"), self).activated.connect(lambda: self._set_search_mode("multi"))
-        QShortcut(QKeySequence("Ctrl+3"), self).activated.connect(lambda: self._set_search_mode("range"))
+        for seq, mode in (("Ctrl+1", "one"), ("Ctrl+2", "multi"), ("Ctrl+3", "range")):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(lambda m=mode: self._set_search_mode(m))
+            self._all_shortcuts.append(sc)
 
     def _set_search_mode(self, value):
         self.mode_buttons[value].setChecked(True)
+
+    def _set_shortcuts_enabled(self, enabled):
+        # QShortcut fires on the plain Qt.WindowShortcut context regardless
+        # of whether the widgets under it are enabled - disabling `self`
+        # during a non-cancellable busy task (see _run_busy) does NOT stop
+        # Ctrl+Enter/Ctrl+1-3/etc. from still activating. Without this, a
+        # keystroke during a busy task could start a second _run_busy call
+        # that shares the one BusyOverlay/window-enabled state with the
+        # first - whichever finishes first would hide the overlay and
+        # re-enable the window while the other was still silently running,
+        # which is exactly the kind of "overlay looks stuck/finishes at the
+        # wrong time" bug this guards against.
+        for sc in self._all_shortcuts:
+            sc.setEnabled(enabled)
 
     def _apply_shortcut(self, key, sequence_text):
         self.shortcut_keys[key] = sequence_text
@@ -1158,8 +1187,23 @@ class FinderWindow(QMainWindow):
         accept (progress_cb, should_cancel) instead of taking no
         arguments (see core.add_paths_to_state) - the overlay then also
         shows a progress bar and a Cancel button wired to worker.cancel()
-        via BusyOverlay.cancelRequested -> _on_cancel_load."""
+        via BusyOverlay.cancelRequested -> _on_cancel_load.
+
+        Refuses to start a second non-quiet task while one is already
+        showing the overlay, rather than stacking two _run_busy calls
+        behind the one shared BusyOverlay/window-enabled state - without
+        this, a QShortcut sneaking through (see _set_shortcuts_enabled)
+        while the window is disabled could kick off a second background
+        task, and whichever of the two finished first would hide the
+        overlay and re-enable the window while the other was still
+        silently running underneath. quiet calls are exempt since they
+        never touch the overlay/window state in the first place."""
         if not quiet:
+            if self._busy_ui_active:
+                self._set_status("Still working on the previous action - please wait a moment.", "warn")
+                return
+            self._busy_ui_active = True
+            self._set_shortcuts_enabled(False)
             self._busy_overlay.start(busy_text, cancellable=cancellable)
             if not cancellable:
                 self.setCursor(Qt.WaitCursor)
@@ -1214,8 +1258,15 @@ class FinderWindow(QMainWindow):
             self._busy_overlay.set_progress(0, 0, f"Scanning... {current:,} file(s) found so far")
 
     def _busy_cleanup(self, entry):
+        # Unconditional: this must run whether the task succeeded, failed,
+        # or was cancelled - _on_busy_finished/_on_busy_failed both call it
+        # before touching `on_success`/the error dialog, specifically so a
+        # bug in either of those can never leave the overlay stuck on
+        # screen or the window/shortcuts stuck disabled.
         if not entry["quiet"]:
             self._busy_overlay.stop()
+            self._busy_ui_active = False
+            self._set_shortcuts_enabled(True)
             if not entry["cancellable"]:
                 self.setEnabled(True)
                 self.unsetCursor()
@@ -1228,8 +1279,16 @@ class FinderWindow(QMainWindow):
         if entry is None:
             return
         on_success = entry["on_success"]
+        # Cleanup (hide overlay, re-enable window/shortcuts) always runs
+        # before on_success, and on_success is guarded separately - a bug
+        # in a specific done() callback (e.g. Group By's tree render) must
+        # never leave the *overlay* stuck, only surface as its own error.
         self._busy_cleanup(entry)
-        on_success(result)
+        try:
+            on_success(result)
+        except Exception:
+            self._error("Unexpected error", traceback.format_exc())
+            self._set_status("Action failed - see error details.", "error")
 
     def _on_busy_failed(self, tb_text):
         entry = self._find_busy_entry(self.sender())
