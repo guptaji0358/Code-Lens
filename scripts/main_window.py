@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import traceback
 
 from PySide6.QtCore import (
@@ -54,18 +55,41 @@ APP_TAGLINE = "Precision line & symbol search"
 class _AsyncWorker(QObject):
     """Runs one callable on a background QThread so slow disk/regex work
     (loading many/large files, reloading, scanning big searches) can't
-    freeze the Qt event loop and trigger Windows' "Not Responding" state."""
+    freeze the Qt event loop and trigger Windows' "Not Responding" state.
+
+    When wants_progress=True, `fn` is called as fn(progress_cb,
+    should_cancel) instead of fn() - progress_cb(phase, current, total)
+    re-emits as the `progress` signal (Qt marshals it back to the UI
+    thread automatically, the same way finished/failed already are),
+    and should_cancel() reports whether cancel() has been called. This
+    is a plain threading.Event rather than anything Qt-specific because
+    it's polled from inside `fn` while it's running on the worker
+    thread - a bound Python callable that only ever reads one flag is
+    simpler and cheaper here than routing a second signal back down to
+    the worker."""
 
     finished = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int, int)
 
-    def __init__(self, fn):
+    def __init__(self, fn, wants_progress=False):
         super().__init__()
         self._fn = fn
+        self._wants_progress = wants_progress
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def is_cancelled(self):
+        return self._cancel_event.is_set()
 
     def run(self):
         try:
-            result = self._fn()
+            if self._wants_progress:
+                result = self._fn(self.progress.emit, self.is_cancelled)
+            else:
+                result = self._fn()
         except Exception:
             self.failed.emit(traceback.format_exc())
         else:
@@ -138,14 +162,15 @@ class FinderWindow(QMainWindow):
         CodeLens' context menu entries. Folders are expanded into every
         text-based file under them."""
         self._remember_folders(paths)
+        self._cancel_pending_loads()
 
-        def work():
-            return core.add_paths_to_state(paths, self.state)
+        def work(progress_cb, should_cancel):
+            return core.add_paths_to_state(paths, self.state, progress_cb=progress_cb, should_cancel=should_cancel)
 
         def done(result):
             self._report_add_result(result, "startup")
 
-        self._run_busy(work, done, "Loading file(s)...")
+        self._run_busy(work, done, "Loading file(s)...", cancellable=True)
 
     # ------------------------------------------------------------- UI --
     def _build_ui(self):
@@ -302,6 +327,30 @@ class FinderWindow(QMainWindow):
         self.filter_menu.aboutToShow.connect(self._populate_filter_menu)
 
         left_layout.addLayout(header_row)
+
+        # ---- background folder-load progress (hidden until a scan/load
+        # of a large directory is actually running) --------------------
+        self.load_progress_row = QFrame()
+        lp_layout = QHBoxLayout(self.load_progress_row)
+        lp_layout.setContentsMargins(0, 0, 0, 8)
+        lp_layout.setSpacing(8)
+        self.load_progress_label = QLabel("")
+        self.load_progress_label.setObjectName("summary")
+        self.load_progress_bar = QProgressBar()
+        self.load_progress_bar.setObjectName("loadProgress")
+        self.load_progress_bar.setFixedHeight(6)
+        self.load_progress_bar.setTextVisible(False)
+        self.load_progress_bar.setRange(0, 0)  # indeterminate until a real total is known
+        self.load_progress_cancel_btn = make_tool_button(
+            "Cancel", "remove", self._on_cancel_load,
+            tooltip="Stop the current folder scan/load - files already loaded are kept")
+        self.load_progress_cancel_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        lp_layout.addWidget(self.load_progress_label, 1)
+        lp_layout.addWidget(self.load_progress_bar, 2)
+        lp_layout.addWidget(self.load_progress_cancel_btn)
+        self.load_progress_row.hide()
+        left_layout.addWidget(self.load_progress_row)
+
         self.file_list = QListWidget()
         self.file_list.setObjectName("fileList")
         self.file_list.setToolTip(
@@ -1010,39 +1059,58 @@ class FinderWindow(QMainWindow):
         return [entry for entry in self.state.files if entry.path in paths]
 
     # ---------------------------------------------------------- background work --
-    def _run_busy(self, work_fn, on_success, busy_text="Working...", quiet=False):
+    def _run_busy(self, work_fn, on_success, busy_text="Working...", quiet=False, cancellable=False):
         """Run work_fn() off the UI thread; call on_success(result) back on
         the UI thread when done. Keeps the window responsive (no "Not
         Responding") during slow disk I/O or large regex scans.
 
-        IMPORTANT: worker.finished/failed are connected to real bound
-        methods of self (a QObject that was created on the UI thread),
-        not to local closures. Qt/PySide only auto-detects a signal's
-        target thread from a *bound method of a QObject* - connecting to
-        a plain closure/lambda instead has no such receiver to inspect,
-        so Qt invokes it directly on whichever thread emitted the signal
-        (here, the worker thread) instead of queuing it back to the UI
-        thread. That silently ran GUI calls (setEnabled, dialogs, text
-        insertion) off the UI thread, which is undefined behavior in Qt
-        and is what caused the window to lock up into unclickable
-        "label" widgets with stray Windows error beeps.
+        IMPORTANT: worker.finished/failed/progress are connected to real
+        bound methods of self (a QObject that was created on the UI
+        thread), not to local closures. Qt/PySide only auto-detects a
+        signal's target thread from a *bound method of a QObject* -
+        connecting to a plain closure/lambda instead has no such
+        receiver to inspect, so Qt invokes it directly on whichever
+        thread emitted the signal (here, the worker thread) instead of
+        queuing it back to the UI thread. That silently ran GUI calls
+        (setEnabled, dialogs, text insertion) off the UI thread, which
+        is undefined behavior in Qt and is what caused the window to
+        lock up into unclickable "label" widgets with stray Windows
+        error beeps.
 
         quiet=True skips the wait-cursor/disable/status-line side effects
         - for background syncs (the live filesystem watcher) that should
-        never block or visibly interrupt whatever the user is doing."""
-        if not quiet:
+        never block or visibly interrupt whatever the user is doing.
+
+        cancellable=True is for large folder scans/loads: work_fn must
+        accept (progress_cb, should_cancel) instead of taking no
+        arguments (see core.add_paths_to_state). The whole window is
+        *not* disabled in this mode - unlike the plain busy state, the
+        point is to let the user keep working (or hit Cancel) while a
+        big directory is still being walked/loaded - and the progress
+        row (bar + label + Cancel button) is shown instead of the
+        static status-line text."""
+        if cancellable:
+            self.load_progress_bar.setRange(0, 0)
+            self.load_progress_label.setText(busy_text)
+            self.load_progress_row.show()
+        elif not quiet:
             self.setCursor(Qt.WaitCursor)
             self._set_status(busy_text, "dim")
             self.setEnabled(False)
 
         thread = QThread(self)
-        worker = _AsyncWorker(work_fn)
+        worker = _AsyncWorker(work_fn, wants_progress=cancellable)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
-        self._busy_threads.append({"thread": thread, "worker": worker, "on_success": on_success, "quiet": quiet})
+        self._busy_threads.append({
+            "thread": thread, "worker": worker, "on_success": on_success,
+            "quiet": quiet, "cancellable": cancellable,
+        })
         worker.finished.connect(self._on_busy_finished)
         worker.failed.connect(self._on_busy_failed)
+        if cancellable:
+            worker.progress.connect(self._on_busy_progress)
         thread.start()
 
     def _find_busy_entry(self, worker):
@@ -1051,8 +1119,42 @@ class FinderWindow(QMainWindow):
                 return entry
         return None
 
+    def _cancel_pending_loads(self):
+        """Cancels any cancellable load (folder scan/import) still in
+        flight - called before starting a new one, so switching folders
+        mid-scan (Add -> pick another folder, drop a different one,
+        open a different recent entry) stops the stale scan instead of
+        letting it keep walking disk in the background after its result
+        would just be discarded anyway."""
+        for entry in self._busy_threads:
+            if entry["cancellable"]:
+                entry["worker"].cancel()
+
+    def _on_cancel_load(self):
+        # Several cancellable loads can't really overlap in practice (the
+        # explorer/dialogs are modal while one runs), but guard for it
+        # anyway rather than assuming there's exactly one.
+        for entry in self._busy_threads:
+            if entry["cancellable"]:
+                entry["worker"].cancel()
+        self.load_progress_cancel_btn.setEnabled(False)
+        self.load_progress_label.setText("Cancelling...")
+
+    def _on_busy_progress(self, phase, current, total):
+        if total > 0:
+            self.load_progress_bar.setRange(0, total)
+            self.load_progress_bar.setValue(current)
+            verb = "Scanning" if phase == "scanning" else "Loading"
+            self.load_progress_label.setText(f"{verb} {current:,} of {total:,} file(s)...")
+        else:
+            self.load_progress_bar.setRange(0, 0)  # indeterminate - still walking the tree
+            self.load_progress_label.setText(f"Scanning... {current:,} file(s) found so far")
+
     def _busy_cleanup(self, entry):
-        if not entry["quiet"]:
+        if entry["cancellable"]:
+            self.load_progress_row.hide()
+            self.load_progress_cancel_btn.setEnabled(True)
+        elif not entry["quiet"]:
             self.setEnabled(True)
             self.unsetCursor()
         entry["thread"].quit()
@@ -1074,6 +1176,20 @@ class FinderWindow(QMainWindow):
         self._busy_cleanup(entry)
         self._error("Unexpected error", tb_text)
         self._set_status("Action failed - see error details.", "error")
+
+    def closeEvent(self, event):
+        # Cancel any in-flight cancellable load (a big folder scan) and
+        # wait for its thread to actually stop before letting the window
+        # close - destroying a running QThread out from under its worker
+        # is undefined behavior (and a common source of the "app closed
+        # but a python.exe process lingers" symptom), not just a matter
+        # of losing the partial results.
+        for entry in list(self._busy_threads):
+            if entry["cancellable"]:
+                entry["worker"].cancel()
+            entry["thread"].quit()
+            entry["thread"].wait()
+        super().closeEvent(event)
 
     # ---------------------------------------------------------- dialogs helper --
     def _dialog(self, kind, title, message, buttons=None):
@@ -1110,14 +1226,15 @@ class FinderWindow(QMainWindow):
             self._set_status("Nothing droppable - only local files/folders can be added this way.", "warn")
             return
         self._remember_folders(paths)
+        self._cancel_pending_loads()
 
-        def work():
-            return core.add_paths_to_state(paths, self.state)
+        def work(progress_cb, should_cancel):
+            return core.add_paths_to_state(paths, self.state, progress_cb=progress_cb, should_cancel=should_cancel)
 
         def done(result):
             self._report_add_result(result, "drag & drop")
 
-        self._run_busy(work, done, "Loading dropped file(s)...")
+        self._run_busy(work, done, "Loading dropped file(s)...", cancellable=True)
 
     def _sync_fs_watcher(self):
         """Rebuilds the watch list from self.state (sources + loaded
@@ -1188,8 +1305,13 @@ class FinderWindow(QMainWindow):
         ok_count, messages, view_only_count = result
         self._refresh_file_list()
         self._sync_fs_watcher()
+        cancel_msgs = [m for m in messages if m.startswith("Load cancelled")]
+        messages = [m for m in messages if not m.startswith("Load cancelled")]
         if messages:
             self._error("Some files failed to load", "\n".join(messages))
+        if cancel_msgs:
+            self._set_status(cancel_msgs[0], "warn")
+            return
         if ok_count or view_only_count:
             suffix = f" ({view_only_count} shown as view-only, unsupported for editing)" if view_only_count else ""
             self._set_status(f"Added {ok_count} file(s) via {source}.{suffix}", "ok")
@@ -1220,14 +1342,15 @@ class FinderWindow(QMainWindow):
             return
 
         self._remember_folders(paths)
+        self._cancel_pending_loads()
 
-        def work():
-            return core.add_paths_to_state(paths, self.state)
+        def work(progress_cb, should_cancel):
+            return core.add_paths_to_state(paths, self.state, progress_cb=progress_cb, should_cancel=should_cancel)
 
         def done(result):
             self._report_add_result(result, "Add")
 
-        self._run_busy(work, done, "Loading file(s)...")
+        self._run_busy(work, done, "Loading file(s)...", cancellable=True)
 
     def _on_file_list_context_menu(self, pos):
         item = self.file_list.itemAt(pos)
@@ -1382,14 +1505,15 @@ class FinderWindow(QMainWindow):
         self._sync_fs_watcher()
         self._clear_results()
         self._remember_folders([folder])
+        self._cancel_pending_loads()
 
-        def work():
-            return core.add_paths_to_state([folder], self.state)
+        def work(progress_cb, should_cancel):
+            return core.add_paths_to_state([folder], self.state, progress_cb=progress_cb, should_cancel=should_cancel)
 
         def done(result):
             self._report_add_result(result, "Recent")
 
-        self._run_busy(work, done, "Loading folder...")
+        self._run_busy(work, done, "Loading folder...", cancellable=True)
 
     def on_change(self):
         if self.state.files and not self._confirm(

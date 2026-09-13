@@ -235,23 +235,35 @@ _SKIP_DIR_NAMES = {
 MAX_FOLDER_FILES = 20000
 
 
-def collect_all_files(folder):
+def collect_all_files(folder, progress_cb=None, should_cancel=None):
     """
     Walks `folder` recursively and splits every file it finds into
-    (text_files, other_files, truncated): text_files pass is_text_file
-    and are the ones CodeLens actually loads/searches; other_files are
-    everything else (office docs, images, executables, ...) - never
-    read, kept only so the folder/file view can show a complete picture
-    of what exists on disk. Both lists are sorted for stable ordering.
-    MAX_FOLDER_FILES caps the *combined* total so a huge folder (a
-    drive root, an unfiltered Documents tree) still finishes the walk
-    instead of scanning indefinitely.
+    (text_files, other_files, truncated, cancelled): text_files pass
+    is_text_file and are the ones CodeLens actually loads/searches;
+    other_files are everything else (office docs, images, executables,
+    ...) - never read, kept only so the folder/file view can show a
+    complete picture of what exists on disk. Both lists are sorted for
+    stable ordering. MAX_FOLDER_FILES caps the *combined* total so a
+    huge folder (a drive root, an unfiltered Documents tree) still
+    finishes the walk instead of scanning indefinitely.
+
+    progress_cb, when given, is called periodically as
+    progress_cb("scanning", files_seen_so_far, 0) - the walk has no
+    known total until it finishes, so the third argument is always 0
+    (an indeterminate/"still counting" progress state) here.
+    should_cancel, when given, is polled between directories so a
+    background scan of a very deep/large tree can be aborted promptly
+    instead of running to completion or to MAX_FOLDER_FILES regardless.
     """
     text_found = []
     other_found = []
     truncated = False
+    cancelled = False
     total = 0
     for dirpath, dirnames, filenames in os.walk(folder):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
         for name in filenames:
             full = os.path.join(dirpath, name)
@@ -260,12 +272,14 @@ def collect_all_files(folder):
             else:
                 other_found.append(full)
             total += 1
+            if progress_cb is not None and total % 200 == 0:
+                progress_cb("scanning", total, 0)
             if total >= MAX_FOLDER_FILES:
                 truncated = True
                 break
         if truncated:
             break
-    return sorted(text_found), sorted(other_found), truncated
+    return sorted(text_found), sorted(other_found), truncated, cancelled
 
 
 def collect_text_files(folder):
@@ -276,7 +290,7 @@ def collect_text_files(folder):
     wrapper over collect_all_files for callers that only care about
     loadable text files.
     """
-    text_found, _other, truncated = collect_all_files(folder)
+    text_found, _other, truncated, _cancelled = collect_all_files(folder)
     return text_found, truncated
 
 
@@ -1313,7 +1327,7 @@ def add_file_to_state(path, state):
     return True, msg
 
 
-def add_paths_to_state(paths, state):
+def add_paths_to_state(paths, state, progress_cb=None, should_cancel=None):
     """
     Adds a mix of file and folder paths to `state`. Folders are expanded
     recursively via collect_all_files - this is what powers both the
@@ -1332,6 +1346,18 @@ def add_paths_to_state(paths, state):
     tens of thousands of files once node_modules/.git/etc. are walked)
     made the whole add O(n^2) and could look like a permanent freeze/
     blank explorer even though it was still (very slowly) working.
+
+    progress_cb, when given, is called as progress_cb(phase, current,
+    total) during both the directory walk ("scanning", see
+    collect_all_files) and the per-file load loop ("loading", current,
+    total) - callers run this off the UI thread and relay progress_cb
+    calls back via a Qt signal, so the caller decides how "current"/
+    "total" turn into an actual progress bar. should_cancel, when
+    given, is polled during both phases so a scan/load in progress can
+    be aborted promptly (e.g. the user picked a different folder or
+    closed the window) instead of running to completion regardless -
+    on cancellation, everything loaded up to that point is kept rather
+    than thrown away.
     """
     for p in paths:
         abs_p = os.path.abspath(p)
@@ -1341,9 +1367,14 @@ def add_paths_to_state(paths, state):
     expanded = []
     other_paths = []
     fail_msgs = []
+    cancelled = False
     for p in paths:
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
         if os.path.isdir(p):
-            files, others, truncated = collect_all_files(p)
+            files, others, truncated, dir_cancelled = collect_all_files(
+                p, progress_cb=progress_cb, should_cancel=should_cancel)
             expanded.extend(files)
             other_paths.extend(others)
             if truncated:
@@ -1351,6 +1382,9 @@ def add_paths_to_state(paths, state):
                     f"'{os.path.basename(p) or p}' has more than {MAX_FOLDER_FILES:,} "
                     f"files - stopped after {MAX_FOLDER_FILES:,} rather than keep scanning "
                     f"indefinitely. Pick a more specific subfolder for the rest.")
+            if dir_cancelled:
+                cancelled = True
+                break
         elif is_text_file(p):
             expanded.append(p)
         else:
@@ -1358,31 +1392,42 @@ def add_paths_to_state(paths, state):
 
     index = {existing.path: i for i, existing in enumerate(state.files)}
     ok_count = 0
-    for p in expanded:
+    total_expanded = len(expanded)
+    for i, p in enumerate(expanded):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            break
         entry, msg = load_single_file(p)
         if not entry:
             fail_msgs.append(msg)
-            continue
-        existing_i = index.get(entry.path)
-        if existing_i is not None:
-            state.files[existing_i] = entry
         else:
-            index[entry.path] = len(state.files)
-            state.files.append(entry)
-        ok_count += 1
+            existing_i = index.get(entry.path)
+            if existing_i is not None:
+                state.files[existing_i] = entry
+            else:
+                index[entry.path] = len(state.files)
+                state.files.append(entry)
+            ok_count += 1
+        if progress_cb is not None and (i % 25 == 0 or i == total_expanded - 1):
+            progress_cb("loading", i + 1, total_expanded)
 
     display_index = {existing.path: i for i, existing in enumerate(state.display_files)}
     view_only_count = 0
-    for p in other_paths:
-        entry = make_display_entry(p)
-        existing_i = display_index.get(entry.path)
-        if existing_i is not None:
-            state.display_files[existing_i] = entry
-        else:
-            display_index[entry.path] = len(state.display_files)
-            state.display_files.append(entry)
-        view_only_count += 1
+    if not cancelled:
+        for p in other_paths:
+            entry = make_display_entry(p)
+            existing_i = display_index.get(entry.path)
+            if existing_i is not None:
+                state.display_files[existing_i] = entry
+            else:
+                display_index[entry.path] = len(state.display_files)
+                state.display_files.append(entry)
+            view_only_count += 1
 
+    if cancelled:
+        fail_msgs.append(
+            f"Load cancelled - {ok_count:,} of {total_expanded:,} file(s) were loaded "
+            f"before stopping; what was already loaded has been kept.")
     if ok_count:
         state.reset_search()
     return ok_count, fail_msgs, view_only_count
@@ -1444,7 +1489,7 @@ def rescan_sources(state):
     expected_other = set()
     for p in state.sources:
         if os.path.isdir(p):
-            files, others, _truncated = collect_all_files(p)
+            files, others, _truncated, _cancelled = collect_all_files(p)
             expected.update(os.path.abspath(f) for f in files)
             expected_other.update(os.path.abspath(f) for f in others)
         elif os.path.isfile(p):
