@@ -700,6 +700,21 @@ class FinderWindow(QMainWindow):
         panel_bg = with_alpha(t["bg_panel"], 130) if self.glass_enabled else t["bg_panel"]
         self.status.setStyleSheet(f"color: {color}; background: {panel_bg}; padding: 6px 12px; border-radius: 8px;")
 
+    def _entry_size_str(self, entry):
+        # entry.size is stat'd once when the file is loaded (see
+        # core.load_single_file / make_display_entry) rather than here -
+        # _refresh_file_list runs on the UI thread on every search, view-
+        # mode switch, and filter change, so re-stat'ing every file's size
+        # from disk on every one of those was exactly the kind of
+        # synchronous per-render I/O that made switching views freeze the
+        # window on a folder with thousands of files.
+        return core.format_size(entry.size) if entry.size is not None else "?"
+
+    def _entry_modified_str(self, entry):
+        if entry.mtime is None:
+            return "?"
+        return datetime.datetime.fromtimestamp(entry.mtime).strftime("%Y-%m-%d %H:%M")
+
     # ---------------------------------------------------------- filter --
     def _entry_extension(self, entry):
         return os.path.splitext(entry.path)[1].lower() or "(no extension)"
@@ -928,7 +943,7 @@ class FinderWindow(QMainWindow):
                         render(child, depth + 1, parent_parts + [name])
 
                 for entry in sorted(node["files"], key=lambda e: os.path.basename(e.path).lower()):
-                    size = core.format_size(os.path.getsize(entry.path)) if os.path.isfile(entry.path) else "?"
+                    size = self._entry_size_str(entry)
 
                     item = QListWidgetItem()
                     row, lay = add_row(depth, depth * INDENT_PX + CHEVRON_COL_PX)
@@ -962,12 +977,8 @@ class FinderWindow(QMainWindow):
             self.file_list.setIconSize(QSize(20, 20))
             self.file_list.setSpacing(2)
             for entry in shown:
-                size = core.format_size(os.path.getsize(entry.path)) if os.path.isfile(entry.path) else "?"
-                try:
-                    modified = datetime.datetime.fromtimestamp(
-                        os.path.getmtime(entry.path)).strftime("%Y-%m-%d %H:%M")
-                except OSError:
-                    modified = "?"
+                size = self._entry_size_str(entry)
+                modified = self._entry_modified_str(entry)
                 item = QListWidgetItem(
                     real_file_icon(entry.path),
                     f"{os.path.basename(entry.path)}\n"
@@ -977,12 +988,8 @@ class FinderWindow(QMainWindow):
                 item.setToolTip(entry.path)
                 self.file_list.addItem(item)
             for entry in shown_display:
-                size = core.format_size(os.path.getsize(entry.path)) if os.path.isfile(entry.path) else "?"
-                try:
-                    modified = datetime.datetime.fromtimestamp(
-                        os.path.getmtime(entry.path)).strftime("%Y-%m-%d %H:%M")
-                except OSError:
-                    modified = "?"
+                size = self._entry_size_str(entry)
+                modified = self._entry_modified_str(entry)
                 item = QListWidgetItem(
                     real_file_icon(entry.path),
                     f"{os.path.basename(entry.path)}\n"

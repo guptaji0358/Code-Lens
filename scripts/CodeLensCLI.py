@@ -1176,12 +1176,15 @@ class LoadedFile:
     office document, image, executable, ...) and was never read.
     lines/encoding stay None for those; nothing ever searches them."""
 
-    def __init__(self, path, lines, encoding, mtime, editable=True):
+    def __init__(self, path, lines, encoding, mtime, editable=True, size=None):
         self.path = path
         self.lines = lines       # list[str] (1-indexed via lines[i-1]), or None if not editable
         self.encoding = encoding
         self.mtime = mtime       # last known on-disk modification time
         self.editable = editable
+        self.size = size         # last known on-disk size in bytes, or None - stat'd once at
+                                  # load time so the file list can render size/mtime purely from
+                                  # memory (no per-render os.path.getsize/getmtime on the UI thread)
 
 
 class FileState:
@@ -1269,11 +1272,12 @@ def load_single_file(path):
         lines = text.splitlines()
         abspath = os.path.abspath(path)
         try:
-            mtime = os.path.getmtime(abspath)
+            stat = os.stat(abspath)
+            mtime, size = stat.st_mtime, stat.st_size
         except OSError:
-            mtime = None
+            mtime, size = None, None
 
-        entry = LoadedFile(abspath, lines, encoding, mtime)
+        entry = LoadedFile(abspath, lines, encoding, mtime, size=size)
         return entry, f"Loaded '{os.path.basename(path)}' ({len(lines)} lines, encoding: {encoding})"
 
     except FileNotFoundError:
@@ -1300,10 +1304,11 @@ def make_display_entry(path):
     """
     abspath = os.path.abspath(path)
     try:
-        mtime = os.path.getmtime(abspath)
+        stat = os.stat(abspath)
+        mtime, size = stat.st_mtime, stat.st_size
     except OSError:
-        mtime = None
-    return LoadedFile(abspath, None, None, mtime, editable=False)
+        mtime, size = None, None
+    return LoadedFile(abspath, None, None, mtime, editable=False, size=size)
 
 
 def add_file_to_state(path, state):
