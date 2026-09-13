@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import gc
+import subprocess
 import glob
 import bisect
 import codecs
@@ -152,16 +153,57 @@ NON_TEXT_EXTENSIONS = {
     ".db", ".sqlite", ".dat", ".pak",
 }
 
+# Known-good plain-text/source/config extensions. Anything in here is
+# trusted as text outright (no need to sniff its bytes). This is what
+# keeps detection "text-based files only" rather than "anything that
+# isn't on the NON_TEXT_EXTENSIONS blocklist" - an unrecognized
+# extension still falls through to the NUL-byte sniff below rather
+# than being auto-accepted, so a random binary format with an unlisted
+# extension doesn't slip past just because nobody thought to blocklist
+# it.
+TEXT_EXTENSIONS = {
+    # plain text / docs
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".rtf",
+    # config / data
+    ".json", ".jsonc", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".conf",
+    ".toml", ".env", ".properties", ".editorconfig", ".gitignore",
+    ".gitattributes", ".dockerignore",
+    # web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".js", ".jsx",
+    ".ts", ".tsx", ".vue", ".svelte",
+    # programming languages
+    ".py", ".pyw", ".pyi", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",
+    ".hh", ".hxx", ".cs", ".java", ".kt", ".kts", ".go", ".rs", ".rb",
+    ".php", ".swift", ".m", ".mm", ".scala", ".pl", ".pm", ".lua",
+    ".r", ".jl", ".dart", ".groovy", ".hs", ".erl", ".ex", ".exs",
+    ".clj", ".cljs", ".fs", ".fsx", ".vb", ".pas", ".asm", ".s",
+    # shell / scripting
+    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
+    ".vbs",
+    # build / project / markup
+    ".sql", ".make", ".mk", ".cmake", ".gradle", ".proto", ".graphql",
+    ".tex", ".bib", ".diff", ".patch",
+}
+
 
 def is_text_file(path):
     """
-    Best-effort check for whether `path` is worth loading as text: not a
-    known non-text extension, and its first few KB don't contain a NUL
-    byte (the standard signal for binary content, and cheap to check
-    without reading the whole file).
+    Decides whether `path` is worth loading as text.
+
+    Extension is checked first against two explicit lists: a hard
+    blocklist (NON_TEXT_EXTENSIONS - office docs, media, archives,
+    binaries, ...) and a trusted allowlist (TEXT_EXTENSIONS - plain
+    text, source, and config formats). Anything on neither list (an
+    unrecognized extension, or none at all) falls back to sniffing the
+    first few KB for a NUL byte, the standard signal for binary
+    content - cheap, and avoids treating an unknown extension as text
+    just because it wasn't blocklisted.
     """
-    if os.path.splitext(path)[1].lower() in NON_TEXT_EXTENSIONS:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in NON_TEXT_EXTENSIONS:
         return False
+    if ext in TEXT_EXTENSIONS:
+        return True
     try:
         with open(path, "rb") as fh:
             chunk = fh.read(8192)
@@ -193,26 +235,49 @@ _SKIP_DIR_NAMES = {
 MAX_FOLDER_FILES = 20000
 
 
-def collect_text_files(folder):
+def collect_all_files(folder):
     """
-    Walks `folder` recursively and returns (files, truncated): every file
-    path that passes is_text_file (sorted for stable ordering), and
-    whether MAX_FOLDER_FILES was hit before the walk finished.
+    Walks `folder` recursively and splits every file it finds into
+    (text_files, other_files, truncated): text_files pass is_text_file
+    and are the ones CodeLens actually loads/searches; other_files are
+    everything else (office docs, images, executables, ...) - never
+    read, kept only so the folder/file view can show a complete picture
+    of what exists on disk. Both lists are sorted for stable ordering.
+    MAX_FOLDER_FILES caps the *combined* total so a huge folder (a
+    drive root, an unfiltered Documents tree) still finishes the walk
+    instead of scanning indefinitely.
     """
-    found = []
+    text_found = []
+    other_found = []
     truncated = False
+    total = 0
     for dirpath, dirnames, filenames in os.walk(folder):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
         for name in filenames:
             full = os.path.join(dirpath, name)
             if is_text_file(full):
-                found.append(full)
-                if len(found) >= MAX_FOLDER_FILES:
-                    truncated = True
-                    break
+                text_found.append(full)
+            else:
+                other_found.append(full)
+            total += 1
+            if total >= MAX_FOLDER_FILES:
+                truncated = True
+                break
         if truncated:
             break
-    return sorted(found), truncated
+    return sorted(text_found), sorted(other_found), truncated
+
+
+def collect_text_files(folder):
+    """
+    Walks `folder` recursively and returns (files, truncated): every file
+    path that passes is_text_file (sorted for stable ordering), and
+    whether MAX_FOLDER_FILES was hit before the walk finished. Thin
+    wrapper over collect_all_files for callers that only care about
+    loadable text files.
+    """
+    text_found, _other, truncated = collect_all_files(folder)
+    return text_found, truncated
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +286,13 @@ def collect_text_files(folder):
 # Each candidate: (display name, exe filename, extra glob patterns to try
 # if it's not found via the registry's "App Paths" or on PATH). Patterns
 # may use environment variables (expanded with os.path.expandvars) and
-# '*' wildcards for version-numbered install folders.
+# '*' wildcards for version-numbered install folders. Editors installed
+# to a non-system drive (D:\Apps\..., etc.) aren't covered by these
+# fixed patterns at all - that's handled separately by
+# _drive_scan_for_exes, a single bounded walk shared across every
+# candidate's exe name, rather than one unbounded recursive glob per
+# candidate (which is what made an early version of this scan hang for
+# minutes on a populated drive).
 _EDITOR_CANDIDATES = [
     ("Visual Studio Code", "Code.exe", [
         r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
@@ -231,6 +302,12 @@ _EDITOR_CANDIDATES = [
     ("VS Code Insiders", "Code - Insiders.exe", [
         r"%LOCALAPPDATA%\Programs\Microsoft VS Code Insiders\Code - Insiders.exe",
     ]),
+    ("VSCodium", "VSCodium.exe", [
+        r"%LOCALAPPDATA%\Programs\VSCodium\VSCodium.exe",
+        r"%ProgramFiles%\VSCodium\VSCodium.exe",
+    ]),
+    ("Cursor", "Cursor.exe", [r"%LOCALAPPDATA%\Programs\cursor\Cursor.exe"]),
+    ("Zed", "Zed.exe", [r"%LOCALAPPDATA%\Programs\Zed\Zed.exe"]),
     ("Sublime Text", "sublime_text.exe", [
         r"%ProgramFiles%\Sublime Text\sublime_text.exe",
         r"%ProgramFiles%\Sublime Text 3\sublime_text.exe",
@@ -240,8 +317,15 @@ _EDITOR_CANDIDATES = [
         r"%ProgramFiles%\Notepad++\notepad++.exe",
         r"%ProgramFiles(x86)%\Notepad++\notepad++.exe",
     ]),
+    ("Notepad3", "Notepad3.exe", [r"%ProgramFiles%\Notepad3\Notepad3.exe"]),
     ("Atom", "atom.exe", [r"%LOCALAPPDATA%\atom\atom.exe"]),
-    ("Vim", "gvim.exe", [r"%ProgramFiles%\Vim\vim*\gvim.exe", r"%ProgramFiles(x86)%\Vim\vim*\gvim.exe"]),
+    ("Vim", "gvim.exe", [
+        r"%ProgramFiles%\Vim\vim*\gvim.exe",
+        r"%ProgramFiles(x86)%\Vim\vim*\gvim.exe",
+    ]),
+    ("Neovim", "nvim-qt.exe", [r"%ProgramFiles%\Neovim\bin\nvim-qt.exe"]),
+    ("Emacs", "runemacs.exe", [r"%ProgramFiles%\Emacs\*\bin\runemacs.exe"]),
+    ("Geany", "geany.exe", [r"%ProgramFiles%\Geany\bin\geany.exe", r"%ProgramFiles(x86)%\Geany\bin\geany.exe"]),
     ("IntelliJ IDEA", "idea64.exe", [
         r"%ProgramFiles%\JetBrains\IntelliJ IDEA*\bin\idea64.exe",
         r"%LOCALAPPDATA%\Programs\IntelliJ IDEA*\bin\idea64.exe",
@@ -252,12 +336,60 @@ _EDITOR_CANDIDATES = [
     ]),
     ("WebStorm", "webstorm64.exe", [r"%ProgramFiles%\JetBrains\WebStorm*\bin\webstorm64.exe"]),
     ("CLion", "clion64.exe", [r"%ProgramFiles%\JetBrains\CLion*\bin\clion64.exe"]),
+    ("Rider", "rider64.exe", [r"%ProgramFiles%\JetBrains\Rider*\bin\rider64.exe"]),
+    ("GoLand", "goland64.exe", [r"%ProgramFiles%\JetBrains\GoLand*\bin\goland64.exe"]),
+    ("DataGrip", "datagrip64.exe", [r"%ProgramFiles%\JetBrains\DataGrip*\bin\datagrip64.exe"]),
+    ("RustRover", "rustrover64.exe", [r"%ProgramFiles%\JetBrains\RustRover*\bin\rustrover64.exe"]),
+    ("Android Studio", "studio64.exe", [
+        r"%ProgramFiles%\Android\Android Studio\bin\studio64.exe",
+        r"%LOCALAPPDATA%\Programs\Android Studio\bin\studio64.exe",
+    ]),
     ("Visual Studio", "devenv.exe", [
         r"%ProgramFiles%\Microsoft Visual Studio\*\*\Common7\IDE\devenv.exe",
         r"%ProgramFiles(x86)%\Microsoft Visual Studio\*\*\Common7\IDE\devenv.exe",
     ]),
     ("Notepad", "notepad.exe", [r"%WINDIR%\notepad.exe"]),
 ]
+
+# Well-known top-level folder names people install portable/custom apps
+# into on a non-system drive - scanned (bounded-depth, budget-capped)
+# by _drive_scan_for_exes rather than the whole drive.
+_DRIVE_SCAN_DIRS = ("Apps", "MyApps", "Programs", "Tools", "dev", "Dev")
+
+# Keywords matched (case-insensitively) against the registry's uninstall
+# DisplayName, so editors installed somewhere none of the glob patterns
+# above happen to guess (a custom drive, an unusual folder layout) are
+# still found - this is what "real" IDE detection means: reading what
+# Windows itself already knows is installed, not just hoping a fixed
+# list of paths happens to match.
+_EDITOR_NAME_KEYWORDS = (
+    "visual studio code", "vscodium", "cursor", "zed editor", "sublime text",
+    "notepad++", "notepad3", "notepad2", "atom", "vim ", "neovim", "emacs",
+    "geany", "brackets", "intellij idea", "pycharm", "webstorm", "clion",
+    "rider", "goland", "datagrip", "rustrover", "android studio",
+    "visual studio community", "visual studio professional", "visual studio enterprise",
+    "eclipse", "netbeans", "codeblocks", "code::blocks",
+)
+# A DisplayName can match a keyword above by substring yet still not be
+# the editor itself - Visual Studio's own installer/SDK/redistributable
+# entries all contain "visual studio" too. Drop those.
+_EDITOR_NAME_EXCLUDE = (
+    "installer", "redistributable", "build tools", "sdk", "runtime",
+    "tools for office", "shared framework", "diagnostic tools",
+)
+
+
+def _fixed_drive_roots():
+    """Every fixed drive letter that actually exists (C:, D:, ...), so
+    install-location globs can check drives besides the system one."""
+    if not sys.platform.startswith("win"):
+        return []
+    roots = []
+    for letter in string.ascii_uppercase:
+        root = f"{letter}:\\"
+        if os.path.isdir(root):
+            roots.append(root.rstrip("\\"))
+    return roots
 
 
 def _app_paths_lookup(exe_name):
@@ -278,17 +410,187 @@ def _app_paths_lookup(exe_name):
     return None
 
 
+_UNINSTALL_SUBKEYS = (
+    r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+    r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+)
+
+
+def _scan_uninstall_registry_for_editors():
+    """
+    Reads every installed program Windows itself knows about (the same
+    list Settings > Installed Apps and Control Panel's "Uninstall a
+    program" read from) and keeps the ones whose display name looks
+    like a code editor/IDE. This is what actually makes detection
+    "scan the real system" rather than guess fixed install paths - it
+    finds editors regardless of which drive or folder they were
+    installed to.
+    """
+    if not _HAVE_WINREG:
+        return []
+    found = []
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for base in _UNINSTALL_SUBKEYS:
+            try:
+                root = winreg.OpenKey(hive, base)
+            except OSError:
+                continue
+            with root:
+                i = 0
+                while True:
+                    try:
+                        subname = winreg.EnumKey(root, i)
+                    except OSError:
+                        break
+                    i += 1
+                    try:
+                        with winreg.OpenKey(root, subname) as key:
+                            try:
+                                display_name, _ = winreg.QueryValueEx(key, "DisplayName")
+                            except OSError:
+                                continue
+                            lname = display_name.lower()
+                            if not any(kw in lname for kw in _EDITOR_NAME_KEYWORDS):
+                                continue
+                            if any(kw in lname for kw in _EDITOR_NAME_EXCLUDE):
+                                continue
+                            exe_path = None
+                            for value_name in ("DisplayIcon", "InstallLocation"):
+                                try:
+                                    raw, _ = winreg.QueryValueEx(key, value_name)
+                                except OSError:
+                                    continue
+                                if not raw:
+                                    continue
+                                # DisplayIcon is often "C:\...\app.exe,0" -
+                                # strip a trailing ",<icon index>".
+                                candidate = raw.rsplit(",", 1)[0].strip('"')
+                                if candidate.lower().endswith(".exe") and os.path.isfile(candidate):
+                                    exe_path = candidate
+                                    break
+                                if os.path.isdir(candidate):
+                                    # InstallLocation is a folder - look one
+                                    # level deep for the most plausible exe.
+                                    try:
+                                        exes = [f for f in os.listdir(candidate) if f.lower().endswith(".exe")]
+                                    except OSError:
+                                        exes = []
+                                    if exes:
+                                        exe_path = os.path.join(candidate, sorted(exes)[0])
+                                        break
+                            if exe_path and os.path.isfile(exe_path):
+                                found.append((display_name, os.path.abspath(exe_path)))
+                    except OSError:
+                        continue
+    return found
+
+
+def _drive_scan_for_exes(exe_names, max_depth=6, dir_budget=4000):
+    """
+    One bounded, budget-capped walk per (fixed drive x well-known
+    install-root folder) that looks for ANY of exe_names in a single
+    pass - far cheaper than a separate recursive glob per candidate,
+    which is what let an early version of this scan take minutes on a
+    populated drive. max_depth caps how many folders deep under e.g.
+    D:\\Apps\\ it will descend; dir_budget caps total directories
+    visited per root, so a huge or deeply-nested folder (node_modules,
+    a build output tree, ...) can't turn this into a full-drive crawl.
+    Returns {exe_name_lower: path} for whichever were actually found.
+    """
+    wanted = {n.lower() for n in exe_names}
+    result = {}
+    if not wanted:
+        return result
+    for drive in _fixed_drive_roots():
+        for sub in _DRIVE_SCAN_DIRS:
+            root = os.path.join(drive + os.sep, sub)
+            if not os.path.isdir(root):
+                continue
+            base_depth = root.rstrip(os.sep).count(os.sep)
+            visited = 0
+            for dirpath, dirnames, filenames in os.walk(root):
+                visited += 1
+                if visited > dir_budget:
+                    break
+                depth = dirpath.count(os.sep) - base_depth
+                if depth >= max_depth:
+                    dirnames[:] = []  # don't descend further from here
+                    continue
+                for fname in filenames:
+                    lf = fname.lower()
+                    if lf in wanted and lf not in result:
+                        result[lf] = os.path.join(dirpath, fname)
+                if len(result) == len(wanted):
+                    return result
+    return result
+
+
+def reveal_in_explorer(path):
+    """
+    Opens `path`'s containing folder in the OS file manager with the item
+    itself selected/highlighted (Explorer's `/select,` switch on Windows;
+    `open -R` on macOS; falls back to just opening the containing folder
+    on other platforms, which don't have an equivalent "select" concept).
+    Returns False without raising if `path` is falsy or no longer exists on
+    disk (e.g. a file that was deleted since it was loaded) so callers can
+    show a message instead of crashing on a missing/invalid selection.
+    """
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        if sys.platform == "win32":
+            # explorer.exe's own command-line parsing is what's fragile here,
+            # not the path itself: passed as a list, Python's list2cmdline
+            # wraps the whole "/select,<path>" token in one pair of quotes
+            # (since the path can contain spaces) - explorer.exe can't parse
+            # a quote that starts *before* "/select," and silently falls
+            # back to its default view (the user's Documents folder) instead
+            # of erroring, which is exactly the "always opens Documents" bug.
+            # Passing a single pre-built string instead of a list makes
+            # Windows use it as the literal command line, so the quotes can
+            # be placed correctly around just the path.
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", path])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(path) or path])
+    except OSError:
+        return False
+    return True
+
+
 def find_installed_editors():
     """
-    Best-effort scan for code editors installed on this machine. Checks,
-    per candidate: the registry's App Paths, then PATH, then a handful of
-    known install-location glob patterns. Returns a list of (display
-    name, exe path) tuples for whichever candidates were actually found,
-    in the same order as _EDITOR_CANDIDATES. Cheap enough to call fresh
-    each time the GUI builds the "Open with..." submenu, but callers may
-    still want to cache the result for the process lifetime.
+    Scan for code editors/IDEs actually present on this machine, the
+    same way Windows itself would tell you what's installed - not just
+    a fixed list of hoped-for paths. Three passes, combined and
+    de-duplicated by resolved exe path: (1) the registry's Uninstall
+    list (authoritative, drive-and-folder-agnostic), (2) the App Paths
+    registry / PATH / a handful of known %ProgramFiles%-relative globs,
+    and (3) a single bounded scan of well-known install-root folders
+    (Apps, Programs, Tools, ...) across every fixed drive, for anything
+    installed to a non-system drive that neither of the above catches.
+    Returns a list of (display name, exe path) tuples. Cheap enough to
+    call fresh each time the GUI builds the "Open with..." submenu, but
+    callers may still want to cache the result for the process
+    lifetime.
     """
     found = []
+    seen_paths = set()
+
+    def add(name, path):
+        if not path:
+            return
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen_paths:
+            return
+        seen_paths.add(key)
+        found.append((name, os.path.abspath(path)))
+
+    for name, path in _scan_uninstall_registry_for_editors():
+        add(name, path)
+
+    still_missing = []
     for name, exe_name, patterns in _EDITOR_CANDIDATES:
         path = _app_paths_lookup(exe_name) or shutil.which(exe_name)
         if not path:
@@ -298,7 +600,17 @@ def find_installed_editors():
                     path = matches[-1]  # highest-sorting = usually newest version
                     break
         if path and os.path.isfile(path):
-            found.append((name, os.path.abspath(path)))
+            add(name, path)
+        else:
+            still_missing.append((name, exe_name))
+
+    if still_missing:
+        drive_hits = _drive_scan_for_exes([exe for _name, exe in still_missing])
+        for name, exe_name in still_missing:
+            path = drive_hits.get(exe_name.lower())
+            if path:
+                add(name, path)
+
     return found
 
 
@@ -845,13 +1157,17 @@ def _more_input_already_buffered():
 # FILE STATE
 # --------------------------------------------------------------------------
 class LoadedFile:
-    """One file's worth of loaded content."""
+    """One file's worth of loaded content - or, when editable=False, a
+    file that only exists to be shown in the file/folder view (an
+    office document, image, executable, ...) and was never read.
+    lines/encoding stay None for those; nothing ever searches them."""
 
-    def __init__(self, path, lines, encoding, mtime):
+    def __init__(self, path, lines, encoding, mtime, editable=True):
         self.path = path
-        self.lines = lines       # list[str], 1-indexed via lines[i-1]
+        self.lines = lines       # list[str] (1-indexed via lines[i-1]), or None if not editable
         self.encoding = encoding
         self.mtime = mtime       # last known on-disk modification time
+        self.editable = editable
 
 
 class FileState:
@@ -859,7 +1175,10 @@ class FileState:
     them at once; earlier versions of this tool only ever held one."""
 
     def __init__(self):
-        self.files = []          # list[LoadedFile]
+        self.files = []          # list[LoadedFile], editable=True - what search runs against
+        self.display_files = []  # list[LoadedFile], editable=False - unsupported files kept
+                                  # only so the file/folder view can show they exist; never
+                                  # read, never searched, never opened.
         self.last_search = None
         self.sources = []        # list[str]: every file/folder path ever
                                   # explicitly added (Add, drag&drop,
@@ -875,6 +1194,7 @@ class FileState:
 
     def clear_files(self):
         self.files = []
+        self.display_files = []
         self.sources = []
         self.last_search = None
         gc.collect()
@@ -956,6 +1276,22 @@ def load_single_file(path):
         return None, f"Unexpected error loading file: {e}"
 
 
+def make_display_entry(path):
+    """
+    Builds a view-only LoadedFile for a non-text file: records its path
+    and on-disk mtime (for sorting/display) without reading its
+    content. Used so the file/folder view can show every file that
+    exists under an added folder, not just the text ones CodeLens can
+    actually search.
+    """
+    abspath = os.path.abspath(path)
+    try:
+        mtime = os.path.getmtime(abspath)
+    except OSError:
+        mtime = None
+    return LoadedFile(abspath, None, None, mtime, editable=False)
+
+
 def add_file_to_state(path, state):
     """
     Loads `path` and adds it to `state.files` - or, if that exact path
@@ -980,12 +1316,16 @@ def add_file_to_state(path, state):
 def add_paths_to_state(paths, state):
     """
     Adds a mix of file and folder paths to `state`. Folders are expanded
-    into every text-based file under them (recursively) via
-    collect_text_files - this is what powers both the GUI's Add dialog
-    and the Explorer 'Open folder with CodeLens' context menu. Returns
-    (ok_count, fail_msgs), same shape as looping add_file_to_state.
+    recursively via collect_all_files - this is what powers both the
+    GUI's Add dialog and the Explorer 'Open folder with CodeLens'
+    context menu. Text-based files are loaded into state.files as
+    before; every other file found (office docs, images, executables,
+    ...) is recorded as a view-only entry in state.display_files - shown
+    in the file/folder view so it reads as a complete picture of the
+    folder, but never read, searched, or opened. Returns
+    (ok_count, fail_msgs, view_only_count).
 
-    Duplicate detection is done via a path->index map built once up
+    Duplicate detection is done via path->index maps built once up
     front, not add_file_to_state's per-call linear scan of state.files -
     that scan is O(n) per file, so looping it over every file in a big
     folder (an "Open folder" / "New Set" pick on a real project, easily
@@ -999,18 +1339,22 @@ def add_paths_to_state(paths, state):
             state.sources.append(abs_p)
 
     expanded = []
+    other_paths = []
     fail_msgs = []
     for p in paths:
         if os.path.isdir(p):
-            files, truncated = collect_text_files(p)
+            files, others, truncated = collect_all_files(p)
             expanded.extend(files)
+            other_paths.extend(others)
             if truncated:
                 fail_msgs.append(
-                    f"'{os.path.basename(p) or p}' has more than {MAX_FOLDER_FILES:,} text "
+                    f"'{os.path.basename(p) or p}' has more than {MAX_FOLDER_FILES:,} "
                     f"files - stopped after {MAX_FOLDER_FILES:,} rather than keep scanning "
                     f"indefinitely. Pick a more specific subfolder for the rest.")
-        else:
+        elif is_text_file(p):
             expanded.append(p)
+        else:
+            other_paths.append(p)
 
     index = {existing.path: i for i, existing in enumerate(state.files)}
     ok_count = 0
@@ -1026,9 +1370,22 @@ def add_paths_to_state(paths, state):
             index[entry.path] = len(state.files)
             state.files.append(entry)
         ok_count += 1
+
+    display_index = {existing.path: i for i, existing in enumerate(state.display_files)}
+    view_only_count = 0
+    for p in other_paths:
+        entry = make_display_entry(p)
+        existing_i = display_index.get(entry.path)
+        if existing_i is not None:
+            state.display_files[existing_i] = entry
+        else:
+            display_index[entry.path] = len(state.display_files)
+            state.display_files.append(entry)
+        view_only_count += 1
+
     if ok_count:
         state.reset_search()
-    return ok_count, fail_msgs
+    return ok_count, fail_msgs, view_only_count
 
 
 # --------------------------------------------------------------------------
@@ -1084,12 +1441,17 @@ def rescan_sources(state):
         return False
 
     expected = set()
+    expected_other = set()
     for p in state.sources:
         if os.path.isdir(p):
-            files, _truncated = collect_text_files(p)
+            files, others, _truncated = collect_all_files(p)
             expected.update(os.path.abspath(f) for f in files)
+            expected_other.update(os.path.abspath(f) for f in others)
         elif os.path.isfile(p):
-            expected.add(os.path.abspath(p))
+            if is_text_file(p):
+                expected.add(os.path.abspath(p))
+            else:
+                expected_other.add(os.path.abspath(p))
 
     changed = False
     kept = [f for f in state.files if f.path in expected]
@@ -1103,6 +1465,16 @@ def rescan_sources(state):
         if entry:
             state.files.append(entry)
             changed = True
+
+    kept_display = [f for f in state.display_files if f.path in expected_other]
+    if len(kept_display) != len(state.display_files):
+        state.display_files = kept_display
+        changed = True
+
+    known_display = {f.path for f in state.display_files}
+    for p in sorted(expected_other - known_display):
+        state.display_files.append(make_display_entry(p))
+        changed = True
 
     if auto_reload_check(state):
         changed = True
@@ -1398,9 +1770,11 @@ def find_one_line(state):
         return
     auto_reload_check(state)
 
-    print(C_DIM + "Tip: this is a literal match - include any comment "
-                  "(e.g. // TODO or /* note */) in what you type if you "
-                  "want lines to match only with that exact comment attached." + R)
+    print(C_DIM + "Tip: this matches your text literally (whitespace amount "
+                  "is ignored, so 'QDialog* dialog;' also matches "
+                  "'QDialog *dialog;') - include any comment (e.g. // TODO or "
+                  "/* note */) in what you type if you want lines to match "
+                  "only with that exact comment attached." + R)
     try:
         term = input(f"{C_PROMPT}Enter exact text to search for: {R}")
     except (EOFError, KeyboardInterrupt):
@@ -1429,7 +1803,11 @@ def find_one_line(state):
 
     case_sensitive = yes_no("Case sensitive search?", default=False)
     flags = 0 if case_sensitive else re.IGNORECASE
-    pattern = re.compile(re.escape(term), flags)
+    try:
+        pattern = re.compile(build_flexible_pattern(term), flags)
+    except re.error as e:
+        print(C_ERR + f"Failed to build search pattern: {e}" + R)
+        return
 
     state.last_search = f"one: '{term}' (case_sensitive={case_sensitive})"
 

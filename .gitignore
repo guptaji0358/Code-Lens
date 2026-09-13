@@ -6,3 +6,9 @@ build/
 dist/
 dist_tmp/
 build_tmp/
+CLAUDE.md
+CodeLens.spec
+CodeLensSetup.nsi
+DESCRIPTION.txt
+README.md
+recent_folders.json
