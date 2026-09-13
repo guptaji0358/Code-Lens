@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Assets/app_icon.svg" width="88" height="88" alt="CodeLens icon" />
+<img src="Assets/app_icon.ico" width="88" height="88" alt="CodeLens icon" />
 
 # CodeLens
 
@@ -254,7 +254,7 @@ Real vector `.svg` sources live under [`Assets/`](Assets), split by where they'r
 
 - **`DarkModeIcons/`** / **`LightModeIcons/`** — same filenames in both, palette-matched to each theme. Qt loads these natively via `QIcon` — no rasterizer dependency.
 - **`HoverIcons/`** — a single white-on-transparent set used whenever a button's background turns solid (hover/checked), since a themed icon tinted for its resting background disappears against its own hover color.
-- **`app_icon.svg`** — the app/window icon.
+- **`app_icon.ico`** — the app/window icon.
 
 Accent-role icons (search, multi, lines, info, add, reload, clear, grid) are re-tinted at runtime
 to match whichever custom accent color is picked in Settings; danger/warn/secondary icons keep
