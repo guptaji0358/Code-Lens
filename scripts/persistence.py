@@ -79,3 +79,34 @@ def remember_recent_folder(folder):
     folders.insert(0, folder)
     save_recent_folders(folders)
     return folders[:MAX_RECENT_FOLDERS]
+
+
+# --------------------------------------------------------------------------
+# VIEW SETTINGS (misc persisted toggles - solution explorer display, etc.)
+# --------------------------------------------------------------------------
+VIEW_SETTINGS_FILE = os.path.join(BASE_DIR, "view_settings.json")
+VIEW_SETTINGS_DEFAULTS = {
+    "hide_unsupported": False,
+}
+
+
+def load_view_settings():
+    settings = dict(VIEW_SETTINGS_DEFAULTS)
+    if os.path.isfile(VIEW_SETTINGS_FILE):
+        try:
+            with open(VIEW_SETTINGS_FILE, "r", encoding="utf-8") as fh:
+                saved = json.load(fh)
+            settings.update({k: v for k, v in saved.items() if k in settings})
+        except (OSError, json.JSONDecodeError):
+            pass
+    return settings
+
+
+def save_view_setting(key, value):
+    settings = load_view_settings()
+    settings[key] = value
+    try:
+        with open(VIEW_SETTINGS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2)
+    except OSError:
+        pass

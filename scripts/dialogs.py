@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 import CodeLensCLI as core
-from theme import ACCENT_PRESETS, FONT_MONO, with_alpha, contrast_fg, icon
+from theme import ACCENT_PRESETS, FONT_MONO, THEMES, with_alpha, contrast_fg, icon
 from widgets import ColorSwatch, GlassSwitch, GlassCheckbox, HoverToolButton, apply_glass_shadow
 from persistence import SHORTCUT_ACTIONS
 
@@ -810,13 +810,14 @@ class AnimatedDialog(QDialog):
 class SettingsPanel(QFrame):
     themeChanged = Signal(str)
     glassChanged = Signal(bool)
+    hideUnsupportedChanged = Signal(bool)
     accentRequested = Signal()
     shortcutsRequested = Signal()
 
-    def __init__(self, parent, theme, glass_enabled, shortcut_keys):
+    def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False):
         super().__init__(parent)
         self.setObjectName("panel")
-        self._max_height = 150
+        self._max_height = 180
 
         outer_v = QVBoxLayout(self)
         outer_v.setContentsMargins(18, 12, 18, 12)
@@ -870,6 +871,17 @@ class SettingsPanel(QFrame):
         row1.addStretch()
         outer_v.addLayout(row1)
 
+        explorer_row = QHBoxLayout()
+        self.hide_unsupported_chk = GlassCheckbox("Hide unsupported files in Solution Explorer",
+                                                    accent=THEMES[theme]["accent"], fg=THEMES[theme]["fg"])
+        self.hide_unsupported_chk.setChecked(hide_unsupported)
+        self.hide_unsupported_chk.setToolTip(
+            "Hide files the search engine can't read (binaries, unknown encodings) from the file list")
+        self.hide_unsupported_chk.toggled.connect(self.hideUnsupportedChanged.emit)
+        explorer_row.addWidget(self.hide_unsupported_chk)
+        explorer_row.addStretch()
+        outer_v.addLayout(explorer_row)
+
         row2 = QHBoxLayout()
         row2.setSpacing(12)
         sc_title = QLabel("Shortcuts:")
@@ -905,7 +917,7 @@ class SettingsPanel(QFrame):
                  for key, label, default in SHORTCUT_ACTIONS]
         self.shortcuts_lbl.setText("   |   ".join(parts))
 
-    def set_accent_button_style(self, accent_hex, dim, panel_bg):
+    def set_accent_button_style(self, accent_hex, dim, panel_bg, fg=None):
         self.btn_accent.setIcon(QIcon())
         self.btn_accent.setStyleSheet(f"""
             QPushButton {{ background: {accent_hex}; color: {contrast_fg(accent_hex)};
@@ -917,6 +929,7 @@ class SettingsPanel(QFrame):
                 border: 1px solid {accent_hex}; border-radius: 8px; padding: 6px 12px; font-weight: 600; }}
             QPushButton:hover {{ background: {accent_hex}; color: {contrast_fg(accent_hex)}; }}
         """)
+        self.hide_unsupported_chk.set_colors(accent_hex, fg if fg is not None else contrast_fg(panel_bg))
 
     def toggle(self):
         self._visible = not self._visible

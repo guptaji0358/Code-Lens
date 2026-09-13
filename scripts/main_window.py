@@ -43,6 +43,7 @@ from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetai
 from persistence import (
     SHORTCUT_ACTIONS, load_shortcuts, save_shortcuts,
     load_recent_folders, save_recent_folders, remember_recent_folder,
+    load_view_settings, save_view_setting,
 )
 from results_render import _html_render_file_card
 
@@ -79,6 +80,7 @@ class FinderWindow(QMainWindow):
         self.glass_enabled = True
         self.custom_accent = None  # None = use theme's default accent
         self.view_mode = "context"
+        self.hide_unsupported = load_view_settings()["hide_unsupported"]
         self._active_extensions = None  # None = no filter, show every extension
         self._collapsed_groups = set()  # relative folder-path tuples collapsed in Group-by-folder view
         self._path_row_labels = []  # (item, ElidedLabel, TreeGuideRow) triples for the "path"
@@ -220,9 +222,11 @@ class FinderWindow(QMainWindow):
         outer.addLayout(toolbar)
 
         # ---- settings (collapsible) ------------------------------------
-        self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys)
+        self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys,
+                                             self.hide_unsupported)
         self.settings_panel.themeChanged.connect(self.set_theme)
         self.settings_panel.glassChanged.connect(self.set_glass)
+        self.settings_panel.hideUnsupportedChanged.connect(self.set_hide_unsupported)
         self.settings_panel.accentRequested.connect(self.on_pick_accent)
         self.settings_panel.shortcutsRequested.connect(self.on_edit_shortcuts)
         self.btn_accent = self.settings_panel.btn_accent
@@ -490,7 +494,7 @@ class FinderWindow(QMainWindow):
 
             self.settings_panel.set_theme_label(self.theme)
             self.settings_panel.set_glass_label(self.glass_enabled)
-            self.settings_panel.set_accent_button_style(t["accent"], t["fg_dim"], t["bg_panel"])
+            self.settings_panel.set_accent_button_style(t["accent"], t["fg_dim"], t["bg_panel"], t["fg"])
             self.case_chk.set_colors(t["accent"], t["fg"])
             self._refresh_file_list()
 
@@ -544,6 +548,15 @@ class FinderWindow(QMainWindow):
         self._apply_theme(animate=True)
         self._set_status(f"Glass effect turned {'on' if enabled else 'off'}.", "ok")
 
+    def set_hide_unsupported(self, enabled):
+        if enabled == self.hide_unsupported:
+            return
+        self.hide_unsupported = enabled
+        save_view_setting("hide_unsupported", enabled)
+        self._refresh_file_list()
+        self._set_status(
+            f"Unsupported files {'hidden' if enabled else 'shown'} in Solution Explorer.", "ok")
+
     def on_pick_accent(self):
         current = self.custom_accent or THEMES[self.theme]["accent"]
         chosen = AccentColorPicker.pick(self, self._effective_theme(), current)
@@ -595,6 +608,14 @@ class FinderWindow(QMainWindow):
             sc.activated.connect(self.on_zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self.on_zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self.on_zoom_reset)
+
+        # Search mode switching - fixed, not part of the editable shortcut list.
+        QShortcut(QKeySequence("Ctrl+1"), self).activated.connect(lambda: self._set_search_mode("one"))
+        QShortcut(QKeySequence("Ctrl+2"), self).activated.connect(lambda: self._set_search_mode("multi"))
+        QShortcut(QKeySequence("Ctrl+3"), self).activated.connect(lambda: self._set_search_mode("range"))
+
+    def _set_search_mode(self, value):
+        self.mode_buttons[value].setChecked(True)
 
     def _apply_shortcut(self, key, sequence_text):
         self.shortcut_keys[key] = sequence_text
@@ -719,7 +740,8 @@ class FinderWindow(QMainWindow):
             self.file_list.style().unpolish(self.file_list)
             self.file_list.style().polish(self.file_list)
         shown = [e for e in self.state.files if self._entry_passes_filter(e)]
-        shown_display = [e for e in self.state.display_files if self._entry_passes_filter(e)]
+        shown_display = [] if self.hide_unsupported else \
+            [e for e in self.state.display_files if self._entry_passes_filter(e)]
 
         if mode == "grid":
             self.file_list.setViewMode(QListWidget.IconMode)
@@ -927,7 +949,7 @@ class FinderWindow(QMainWindow):
 
         n_total = len(self.state.files)
         n_shown = len(shown)
-        n_view_only = len(self.state.display_files)
+        n_view_only = len(shown_display)
         view_only_suffix = f" (+{n_view_only} view-only)" if n_view_only else ""
         if self._active_extensions is not None and n_shown != n_total:
             self.file_summary.setText(
