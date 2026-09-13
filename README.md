@@ -48,14 +48,19 @@ Pick a version below, or jump straight to the [latest release](https://github.co
 
 ### Source code
 
-<a href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v1.3.3.zip"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a>
+<a href="https://github.com/guptaji0358/Code-Lens/archive/refs/tags/v2.0.0.zip"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a>
 
 ### Installers
 
 <table>
 <tr><th align="left">Version</th><th align="left">What's in it</th><th align="left">Get it</th></tr>
 <tr>
-<td valign="top"><code>v1.3.3</code><br><sub>Latest</sub></td>
+<td valign="top"><code>v2.0.0</code><br><sub>Latest</sub></td>
+<td valign="top">Stability release — fixes real UI freezes/"Not Responding" during large folder loads and view switching (Context/Grid/Group By), adds a global loading overlay with cancellable folder scans, a "Hide unsupported files" Solution Explorer setting, and Ctrl+1/2/3 search-mode shortcuts.</td>
+<td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v2.0.0/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
+</tr>
+<tr>
+<td valign="top"><code>v1.3.3</code></td>
 <td valign="top">Fixes Windows Defender/SmartScreen blocking the installer outright — the Setup exe is rebuilt behind NSIS's widely-trusted installer stub instead of a raw, low-reputation PyInstaller bootloader, and no longer self-extracts its payload to <code>%TEMP%</code> on every launch.</td>
 <td valign="top"><a href="https://github.com/guptaji0358/Code-Lens/releases/download/v1.3.3/CodeLens_Setup.exe"><img src="Assets/download-button.svg" width="176" height="46" alt="Download" /></a></td>
 </tr>
