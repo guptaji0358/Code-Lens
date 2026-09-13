@@ -6,10 +6,12 @@ color swatch, hover-aware icon buttons, group-by-folder tree row).
 
 from PySide6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize, Property,
+    QTimer, Signal,
 )
 from PySide6.QtGui import QIcon, QPainter, QColor, QPen, QLinearGradient, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QLabel, QToolButton, QRadioButton, QAbstractButton, QGraphicsDropShadowEffect,
+    QFrame, QVBoxLayout, QProgressBar, QPushButton,
 )
 
 from theme import THEMES, stable_icon, contrast_fg
@@ -462,3 +464,185 @@ def make_tool_button(text, icon_name, on_click, object_name=None, tooltip=None):
         btn.setToolTip(tooltip)
     btn._icon_name = icon_name
     return btn
+
+
+# --------------------------------------------------------------------------
+# GLOBAL BUSY OVERLAY (one instance covers the whole window for every
+# background task - search, folder loads, Group By's tree rebuild, ...)
+# --------------------------------------------------------------------------
+class _SpinnerDial(QWidget):
+    """A small rotating arc, repainted by BusyOverlay's own QTimer - no
+    image assets, cheap enough (one QPainter.drawArc call) to redraw at
+    ~30fps without any measurable CPU cost, and it keeps animating for
+    the whole time a background QThread is running since nothing about
+    it touches that thread."""
+
+    def __init__(self, parent=None, diameter=34, color="#4fd1ff"):
+        super().__init__(parent)
+        self._angle = 0
+        self._color = QColor(color)
+        self.setFixedSize(diameter, diameter)
+
+    def set_angle(self, angle):
+        self._angle = angle
+        self.update()
+
+    def set_color(self, color_hex):
+        self._color = QColor(color_hex)
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(self._color)
+        pen.setWidth(4)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        rect = self.rect().adjusted(3, 3, -3, -3)
+        p.drawArc(rect, -self._angle * 16, 110 * 16)
+
+
+class BusyOverlay(QWidget):
+    """
+    Full-window translucent overlay shown for the duration of any
+    background task run through FinderWindow._run_busy - a directory
+    scan, a search, Group By's tree rebuild, anything. Centers a small
+    animated spinner, a status message, and (only when the running task
+    is cancellable) a progress bar and Cancel button, over a dimmed
+    background that swallows mouse/keyboard input so a second click or
+    view switch can't race the task already running underneath it.
+
+    The spin timer keeps firing (and this widget keeps repainting) for
+    as long as the overlay is visible regardless of what the background
+    QThread is doing - painting only ever happens on the UI thread's own
+    event loop, which is exactly why this can never itself cause a "Not
+    Responding" state the way blocking work on that thread would.
+    """
+
+    cancelRequested = Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setVisible(False)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setFocusPolicy(Qt.StrongFocus)  # so it - not whatever's behind it - eats key presses
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._spin)
+        self._angle = 0
+
+        self._card = QFrame(self)
+        self._card.setObjectName("busyOverlayCard")
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setContentsMargins(30, 24, 30, 22)
+        card_layout.setSpacing(12)
+
+        self._spinner = _SpinnerDial(self._card)
+        card_layout.addWidget(self._spinner, 0, Qt.AlignHCenter)
+
+        self._label = QLabel("Working...")
+        self._label.setObjectName("busyOverlayLabel")
+        self._label.setAlignment(Qt.AlignHCenter)
+        self._label.setWordWrap(True)
+        self._label.setFixedWidth(240)
+        card_layout.addWidget(self._label)
+
+        self._bar = QProgressBar()
+        self._bar.setObjectName("busyOverlayBar")
+        self._bar.setFixedWidth(200)
+        self._bar.setFixedHeight(6)
+        self._bar.setTextVisible(False)
+        self._bar.hide()
+        card_layout.addWidget(self._bar, 0, Qt.AlignHCenter)
+
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setObjectName("busyOverlayCancel")
+        self._cancel_btn.setCursor(Qt.PointingHandCursor)
+        self._cancel_btn.hide()
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
+        card_layout.addWidget(self._cancel_btn, 0, Qt.AlignHCenter)
+
+    def apply_theme(self, accent_hex, card_bg, border_hex, fg_hex):
+        self._spinner.set_color(accent_hex)
+        self._card.setStyleSheet(
+            f"#busyOverlayCard {{ background: {card_bg}; border: 1px solid {border_hex}; border-radius: 14px; }}"
+        )
+        self._label.setStyleSheet(f"color: {fg_hex}; background: transparent; border: none;")
+        self._bar.setStyleSheet(
+            f"QProgressBar#busyOverlayBar {{ background: {border_hex}; border: none; border-radius: 3px; }}"
+            f"QProgressBar#busyOverlayBar::chunk {{ background: {accent_hex}; border-radius: 3px; }}"
+        )
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton#busyOverlayCancel {{ background: transparent; color: {accent_hex};
+                border: 1px solid {accent_hex}; border-radius: 8px; padding: 5px 16px; font-weight: 600; }}
+            QPushButton#busyOverlayCancel:hover {{ background: {accent_hex}; color: {card_bg}; }}
+        """)
+
+    def _on_cancel_clicked(self):
+        self._cancel_btn.setEnabled(False)
+        self._label.setText("Cancelling...")
+        self.cancelRequested.emit()
+
+    def _spin(self):
+        self._angle = (self._angle + 8) % 360
+        self._spinner.set_angle(self._angle)
+
+    def start(self, message, cancellable=False):
+        self._label.setText(message)
+        self._cancel_btn.setVisible(cancellable)
+        self._cancel_btn.setEnabled(True)
+        self._bar.setVisible(cancellable)
+        self._bar.setRange(0, 0)
+        if self.parentWidget() is not None:
+            self.setGeometry(self.parentWidget().rect())
+        self._reposition_card()
+        self.show()
+        self.raise_()
+        self.setFocus(Qt.OtherFocusReason)
+        self._timer.start()
+
+    def set_progress(self, current, total, message=None):
+        if message is not None:
+            self._label.setText(message)
+        if total > 0:
+            self._bar.setRange(0, total)
+            self._bar.setValue(current)
+        else:
+            self._bar.setRange(0, 0)
+        self._reposition_card()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_card()
+
+    def _reposition_card(self):
+        self._card.adjustSize()
+        x = max(0, (self.width() - self._card.width()) // 2)
+        y = max(0, (self.height() - self._card.height()) // 2)
+        self._card.move(x, y)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 110))
+
+    # Swallow every input event so nothing behind the overlay can react
+    # to a click/keystroke while a background task owns the screen.
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def wheelEvent(self, event):
+        event.accept()
+
+    def keyPressEvent(self, event):
+        event.accept()

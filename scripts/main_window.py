@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
-    QProgressBar, QMenu, QFileIconProvider, QWidgetAction,
+    QMenu, QFileIconProvider, QWidgetAction,
 )
 
 import CodeLensCLI as core
@@ -38,7 +38,7 @@ from theme import (
 )
 from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
-    make_tool_button,
+    make_tool_button, BusyOverlay,
 )
 from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel
 from persistence import (
@@ -338,29 +338,6 @@ class FinderWindow(QMainWindow):
 
         left_layout.addLayout(header_row)
 
-        # ---- background folder-load progress (hidden until a scan/load
-        # of a large directory is actually running) --------------------
-        self.load_progress_row = QFrame()
-        lp_layout = QHBoxLayout(self.load_progress_row)
-        lp_layout.setContentsMargins(0, 0, 0, 8)
-        lp_layout.setSpacing(8)
-        self.load_progress_label = QLabel("")
-        self.load_progress_label.setObjectName("summary")
-        self.load_progress_bar = QProgressBar()
-        self.load_progress_bar.setObjectName("loadProgress")
-        self.load_progress_bar.setFixedHeight(6)
-        self.load_progress_bar.setTextVisible(False)
-        self.load_progress_bar.setRange(0, 0)  # indeterminate until a real total is known
-        self.load_progress_cancel_btn = make_tool_button(
-            "Cancel", "remove", self._on_cancel_load,
-            tooltip="Stop the current folder scan/load - files already loaded are kept")
-        self.load_progress_cancel_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        lp_layout.addWidget(self.load_progress_label, 1)
-        lp_layout.addWidget(self.load_progress_bar, 2)
-        lp_layout.addWidget(self.load_progress_cancel_btn)
-        self.load_progress_row.hide()
-        left_layout.addWidget(self.load_progress_row)
-
         self.file_list = QListWidget()
         self.file_list.setObjectName("fileList")
         self.file_list.setToolTip(
@@ -519,6 +496,16 @@ class FinderWindow(QMainWindow):
 
         relayout_root()
 
+        # Created last so it's the topmost child by default (also re-raised
+        # on every start() call) - one overlay instance covers the entire
+        # window for every background task run via _run_busy.
+        self._busy_overlay = BusyOverlay(self)
+        self._busy_overlay.cancelRequested.connect(self._on_cancel_load)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._busy_overlay.setGeometry(self.rect())
+
     # ---------------------------------------------------------- theming --
     def _effective_theme(self):
         t = dict(THEMES[self.theme])
@@ -557,6 +544,7 @@ class FinderWindow(QMainWindow):
             self.settings_panel.set_glass_label(self.glass_enabled)
             self.settings_panel.set_accent_button_style(t["accent"], t["fg_dim"], t["bg_panel"], t["fg"])
             self.case_chk.set_colors(t["accent"], t["fg"])
+            self._busy_overlay.apply_theme(t["accent"], t["bg_panel"], t["border"], t["fg"])
             self._refresh_file_list()
 
             # NOTE: deliberately no QGraphicsDropShadowEffect on these
@@ -835,13 +823,9 @@ class FinderWindow(QMainWindow):
         # tree before it can render a single row - on a folder with many
         # thousands of files that categorization (not the widget creation
         # itself) was the one part of a view switch actually heavy enough
-        # to matter, so it runs off the UI thread while the list clears
-        # and shows a lightweight "Grouping..." placeholder immediately
-        # rather than waiting for the full tree with the old view frozen
-        # on screen.
-        self.file_list.clear()
-        self.file_summary.setText("Grouping files by folder...")
-
+        # to matter, so it runs off the UI thread behind the global
+        # BusyOverlay (see _run_busy) instead of freezing the old view on
+        # screen while it computes.
         shown = [e for e in self.state.files if self._entry_passes_filter(e)]
         shown_display = [] if self.hide_unsupported else \
             [e for e in self.state.display_files if self._entry_passes_filter(e)]
@@ -855,7 +839,7 @@ class FinderWindow(QMainWindow):
                 return  # user switched views again before this finished - discard
             self._refresh_file_list(precomputed_group_tree=root)
 
-        self._run_busy(work, done, quiet=True)
+        self._run_busy(work, done, "Grouping files by folder...")
 
     def _refresh_file_list(self, precomputed_group_tree=None):
         """
@@ -1154,26 +1138,33 @@ class FinderWindow(QMainWindow):
         lock up into unclickable "label" widgets with stray Windows
         error beeps.
 
-        quiet=True skips the wait-cursor/disable/status-line side effects
-        - for background syncs (the live filesystem watcher) that should
-        never block or visibly interrupt whatever the user is doing.
+        quiet=True skips the overlay/wait-cursor/disable/status-line side
+        effects entirely - for background syncs (the live filesystem
+        watcher) that should never block or visibly interrupt whatever
+        the user is doing.
+
+        Every other call shows the single global BusyOverlay (see
+        widgets.py) - a translucent, animated, full-window overlay that
+        both tells the user something is happening and (by swallowing
+        mouse/keyboard input itself) blocks a second click or view
+        switch from racing the task already running underneath it. The
+        window is additionally fully disabled *unless* cancellable=True,
+        since a disabled QMainWindow disables its overlay child too
+        (Qt's enabled state is inherited from the parent), which would
+        make the overlay's own Cancel button unclickable exactly when
+        it's needed.
 
         cancellable=True is for large folder scans/loads: work_fn must
         accept (progress_cb, should_cancel) instead of taking no
-        arguments (see core.add_paths_to_state). The whole window is
-        *not* disabled in this mode - unlike the plain busy state, the
-        point is to let the user keep working (or hit Cancel) while a
-        big directory is still being walked/loaded - and the progress
-        row (bar + label + Cancel button) is shown instead of the
-        static status-line text."""
-        if cancellable:
-            self.load_progress_bar.setRange(0, 0)
-            self.load_progress_label.setText(busy_text)
-            self.load_progress_row.show()
-        elif not quiet:
-            self.setCursor(Qt.WaitCursor)
-            self._set_status(busy_text, "dim")
-            self.setEnabled(False)
+        arguments (see core.add_paths_to_state) - the overlay then also
+        shows a progress bar and a Cancel button wired to worker.cancel()
+        via BusyOverlay.cancelRequested -> _on_cancel_load."""
+        if not quiet:
+            self._busy_overlay.start(busy_text, cancellable=cancellable)
+            if not cancellable:
+                self.setCursor(Qt.WaitCursor)
+                self._set_status(busy_text, "dim")
+                self.setEnabled(False)
 
         thread = QThread(self)
         worker = _AsyncWorker(work_fn, wants_progress=cancellable)
@@ -1208,32 +1199,26 @@ class FinderWindow(QMainWindow):
                 entry["worker"].cancel()
 
     def _on_cancel_load(self):
-        # Several cancellable loads can't really overlap in practice (the
-        # explorer/dialogs are modal while one runs), but guard for it
-        # anyway rather than assuming there's exactly one.
+        # BusyOverlay.cancelRequested only fires while a cancellable task's
+        # overlay is showing, but guard for more than one in flight anyway
+        # rather than assuming there's exactly one.
         for entry in self._busy_threads:
             if entry["cancellable"]:
                 entry["worker"].cancel()
-        self.load_progress_cancel_btn.setEnabled(False)
-        self.load_progress_label.setText("Cancelling...")
 
     def _on_busy_progress(self, phase, current, total):
         if total > 0:
-            self.load_progress_bar.setRange(0, total)
-            self.load_progress_bar.setValue(current)
             verb = "Scanning" if phase == "scanning" else "Loading"
-            self.load_progress_label.setText(f"{verb} {current:,} of {total:,} file(s)...")
+            self._busy_overlay.set_progress(current, total, f"{verb} {current:,} of {total:,} file(s)...")
         else:
-            self.load_progress_bar.setRange(0, 0)  # indeterminate - still walking the tree
-            self.load_progress_label.setText(f"Scanning... {current:,} file(s) found so far")
+            self._busy_overlay.set_progress(0, 0, f"Scanning... {current:,} file(s) found so far")
 
     def _busy_cleanup(self, entry):
-        if entry["cancellable"]:
-            self.load_progress_row.hide()
-            self.load_progress_cancel_btn.setEnabled(True)
-        elif not entry["quiet"]:
-            self.setEnabled(True)
-            self.unsetCursor()
+        if not entry["quiet"]:
+            self._busy_overlay.stop()
+            if not entry["cancellable"]:
+                self.setEnabled(True)
+                self.unsetCursor()
         entry["thread"].quit()
         entry["thread"].wait()
         self._busy_threads.remove(entry)

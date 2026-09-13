@@ -238,10 +238,6 @@ def build_stylesheet(t, glass):
     QRadioButton::indicator {{ width: 0; height: 0; }}
     QRadioButton:checked {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
     QCheckBox {{ color: {t['fg_dim']}; }}
-    QProgressBar#loadProgress {{
-        background: {input_bg}; border: 1px solid {border}; border-radius: 3px;
-    }}
-    QProgressBar#loadProgress::chunk {{ background: {accent}; border-radius: 3px; }}
     QScrollBar:vertical {{ background: transparent; width: 12px; border-radius: 6px; }}
     QScrollBar::handle:vertical {{ background: {border}; border-radius: 6px; min-height: 24px; }}
     QScrollBar::handle:vertical:hover {{ background: {accent}; }}
