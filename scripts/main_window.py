@@ -378,6 +378,8 @@ class FinderWindow(QMainWindow):
 
         self.search_btn = make_tool_button("Search", "search", self.on_search,
                                             tooltip="Run the search")
+        self.search_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.search_btn.setText("Search")
 
         self.input_stack = QStackedWidget()
         self.input_stack.addWidget(self.query_entry)
