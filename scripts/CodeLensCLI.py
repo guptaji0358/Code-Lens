@@ -573,6 +573,9 @@ def reveal_in_explorer(path):
     return True
 
 
+_installed_editors_cache = None
+
+
 def find_installed_editors():
     """
     Scan for code editors/IDEs actually present on this machine, the
@@ -584,11 +587,20 @@ def find_installed_editors():
     and (3) a single bounded scan of well-known install-root folders
     (Apps, Programs, Tools, ...) across every fixed drive, for anything
     installed to a non-system drive that neither of the above catches.
-    Returns a list of (display name, exe path) tuples. Cheap enough to
-    call fresh each time the GUI builds the "Open with..." submenu, but
-    callers may still want to cache the result for the process
-    lifetime.
+    Returns a list of (display name, exe path) tuples.
+
+    Cached for the process lifetime after the first call: the registry
+    scan plus the bounded drive walk are real (if individually small)
+    disk/registry I/O, and the GUI calls this synchronously on the UI
+    thread every time the file-list context menu builds its "Open
+    with..." submenu - installed editors don't change mid-session, so
+    repeating that work on every single right-click bought nothing but
+    a chance to feel like a hang on a slow/network drive.
     """
+    global _installed_editors_cache
+    if _installed_editors_cache is not None:
+        return _installed_editors_cache
+
     found = []
     seen_paths = set()
 
@@ -625,6 +637,7 @@ def find_installed_editors():
             if path:
                 add(name, path)
 
+    _installed_editors_cache = found
     return found
 
 

@@ -506,12 +506,9 @@ class FileDetailsDialog(QDialog):
             row += 1
 
             for entry in section_files:
-                size = core.format_size(os.path.getsize(entry.path)) if os.path.isfile(entry.path) else "?"
-                try:
-                    modified = datetime.datetime.fromtimestamp(
-                        os.path.getmtime(entry.path)).strftime("%Y-%m-%d %H:%M")
-                except OSError:
-                    modified = "?"
+                size = core.format_size(entry.size) if entry.size is not None else "?"
+                modified = (datetime.datetime.fromtimestamp(entry.mtime).strftime("%Y-%m-%d %H:%M")
+                            if entry.mtime is not None else "?")
                 values = [os.path.basename(entry.path), f"{len(entry.lines):,}", size,
                           entry.encoding or "?", modified, entry.path]
                 table.insertRow(row)

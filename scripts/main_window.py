@@ -143,6 +143,13 @@ class FinderWindow(QMainWindow):
         self._refresh_file_list()
         self._set_status("Ready - press Alt+A or click Add to load a file.", "ok")
 
+        # Pre-warm the installed-editors cache in the background so the
+        # first "Open with..." right-click menu doesn't pay for the
+        # registry scan/drive walk synchronously on the UI thread - later
+        # calls (from _on_file_list_context_menu) just reuse the cache
+        # core.find_installed_editors() now keeps for the process lifetime.
+        self._run_busy(core.find_installed_editors, lambda _result: None, quiet=True)
+
         startup_paths = [p for p in sys.argv[1:] if os.path.isfile(p) or os.path.isdir(p)]
         if startup_paths:
             # Deferred rather than called directly: this runs from inside
