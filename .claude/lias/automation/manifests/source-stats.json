@@ -1,0 +1,13 @@
+{
+  "id": "source-stats",
+  "name": "Source file statistics",
+  "description": "Count files and lines per extension in the project (skips .git, dist, build, .claude).",
+  "entry": "scripts/source_stats.py",
+  "input_schema": {"extensions": {"type": "array"}},
+  "timeout_s": 30,
+  "risk": 0,
+  "version": "1.0.0",
+  "status": "active",
+  "cache": true,
+  "fingerprint_globs": ["scripts/*.py", "*.py"]
+}

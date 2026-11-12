@@ -1,0 +1,5 @@
+{
+  "config_version": 1,
+  "retrieval": {"max_results": 5, "max_chars": 2000},
+  "automation": {"max_consecutive_failures": 3, "cache_ttl_s": 3600}
+}

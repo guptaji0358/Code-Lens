@@ -1,0 +1,7 @@
+database/
+cache/
+logs/
+backups/
+benchmarks/
+__pycache__/
+*.pyc
