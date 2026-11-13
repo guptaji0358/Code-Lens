@@ -128,6 +128,12 @@ schema: `docs/schema/codelens-agent-v1.schema.json`. When changing output fields
 — `tests/test_agent_schema.py` fails on any undocumented field. Documented commands in the guide
 (`bash verify` blocks) are executed by `tests/test_agent_docs.py`.
 
+**Optional MCP front-end** (`scripts/codelens_agent/mcp_server/`, docs `docs/MCP_INTEGRATION.md`):
+stdio MCP server over the same `ops`/`Sandbox`. `tools.py` (catalogue, no SDK import) and
+`server.py` (the only SDK importer, low-level `Server` so ops stays the sole validator). SDK is
+optional: `pip install -r requirements-mcp.txt`; the CLI must never import it. Tests:
+`tests/test_mcp_*.py` (SDK-dependent ones skip without `mcp`).
+
 ## Persisted files
 
 Written next to the running script/exe (`BASE_DIR` in `theme.py`, resolved via

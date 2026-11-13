@@ -6,6 +6,8 @@ no server, no network.
 
 - Interface version: **1** · JSON schema version: **1.0** · Tool version: **2.0.0**
 - Formal schema: [`docs/schema/codelens-agent-v1.schema.json`](schema/codelens-agent-v1.schema.json)
+- MCP clients: an optional MCP server over the same operations is described in
+  [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md). The CLI interface below is unchanged and needs no MCP.
 - Self-description: `python -m codelens_agent capabilities` (an agent does not need this document
   to use the interface; the capabilities response lists commands, arguments, modes, limits,
   pagination and unsupported features).
@@ -38,7 +40,9 @@ not change it.
 **Supported operations:** `capabilities`, `info`, `read`, `search`. Search modes: `flexible`
 (default), `literal`, `word`. **Not supported** (and not advertised): writing/editing, regex
 queries, symbol/AST indexing, following directory symlinks/junctions, reading binary files or files
-over the size limit, signed cursors, MCP server.
+over the size limit, signed cursors. (`capabilities` still lists `mcp_server` as unsupported: the
+CLI process is not an MCP server. The separate optional MCP front-end is in
+[`MCP_INTEGRATION.md`](MCP_INTEGRATION.md).)
 
 **Interface versioning.** `interface_version` changes only on breaking changes to command names or
 semantics. Additive changes (new commands, optional arguments, response fields, error/warning
@@ -431,6 +435,7 @@ and pass `--request request.json`.
 - Not a stable snapshot: concurrent modification is detected only between pages, best effort.
 - Search is single-process and sequential; large trees are bounded by the budgets in §5.
 - `python -m codelens_agent` needs `scripts/` on `PYTHONPATH`/cwd; the directory form avoids that.
-- Not packaged in the frozen executables. No MCP server (not implemented).
+- Not packaged in the frozen executables. The CLI is not an MCP server; for MCP see
+  [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) (optional, separate process).
 - `--help` is human text on stdout (exit 0).
 - Argument-parse errors report `"operation": null` even when the command word was valid.
