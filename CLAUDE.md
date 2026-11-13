@@ -5,8 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 CodeLens is a precision line/symbol search tool for text files, distributed as a Windows desktop
-app + installer. There is no build system, package manifest, or test suite — it's plain Python run
-directly or packaged into a frozen exe by a separate (external) PyInstaller step.
+app + installer. There is no build system or package manifest — it's plain Python run directly or
+packaged into a frozen exe by a separate (external) PyInstaller step. A `unittest` suite covers the
+AI-agent interface (`scripts/codelens_agent/`, see below); the GUI and interactive CLI have no
+automated tests.
 
 ## Commands
 
@@ -23,7 +25,18 @@ python scripts/installer_app.py            # install wizard
 python scripts/installer_app.py --uninstall
 ```
 
-There is no lint config or test suite in this repo. Syntax-check a file after editing with
+```bash
+# AI-agent interface (read-only JSON; stdlib only). From any directory:
+python scripts/codelens_agent capabilities
+# or, from scripts/ (or with PYTHONPATH=scripts):  python -m codelens_agent capabilities
+
+# Tests — install the test-only dependency first; the run FAILS (does not skip) without it
+pip install -r tests/requirements-test.txt
+python -m unittest discover -s tests        # ~110 s; includes performance tests
+python -m unittest discover -s tests -p "test_agent_schema.py"   # one file
+```
+
+There is no lint config. Syntax-check a file after editing with
 `python -m py_compile scripts/<file>.py`.
 
 ## Architecture
@@ -103,6 +116,17 @@ failures (an unsigned-exe ShellExecute block, and an OLE/drag-and-drop threading
 in `_write_launcher_vbs`'s docstring. The GUI receives the clicked file/folder path as
 `sys.argv[1:]` (read in `main_window.py`'s `FinderWindow.__init__`) and expands folders via
 `core.add_paths_to_state`.
+
+## AI-agent interface (`scripts/codelens_agent/`)
+
+Read-only, provider-independent JSON CLI over the shared core (`CodeLensCLI.py` is reused
+unmodified via `engine.py`). Modules: `cli.py` (argv/`--request`), `ops.py` (validation, command
+catalogue, `capabilities`), `search.py`, `sandbox.py` (roots + limits), `cursor.py` (stateless
+pagination cursors), `protocol.py` (envelope, error/exit codes), `engine.py` (core adapter).
+Interface version 1 is frozen: only additive changes. Docs: `docs/AI_AGENT_INTEGRATION.md`;
+schema: `docs/schema/codelens-agent-v1.schema.json`. When changing output fields, update the schema
+— `tests/test_agent_schema.py` fails on any undocumented field. Documented commands in the guide
+(`bash verify` blocks) are executed by `tests/test_agent_docs.py`.
 
 ## Persisted files
 

@@ -42,7 +42,7 @@ one-click Windows setup with:
 - **An uninstaller** — cleanly removes the app, its shortcuts, and its registry entries.
 - **Assets/** — icons and other resources the app needs at runtime, bundled alongside the executables.
 
-Prefer running from source instead? See [Requirements](#requirements) below — just Python 3.9+ and (for the desktop edition) `pip install PySide6`.
+Prefer running from source instead? See [Requirements](#requirements) below — just Python and (for the desktop edition) `pip install PySide6`.
 
 Pick a version below, or jump straight to the [latest release](https://github.com/guptaji0358/Code-Lens/releases/latest).
 
@@ -104,11 +104,11 @@ Pick a version below, or jump straight to the [latest release](https://github.co
 <tr>
 <td width="50%" valign="top">
 
-### 🖥️ [`CodeLensCLI.py`](CodeLensCLI.py)
+### 🖥️ [`CodeLensCLI.py`](scripts/CodeLensCLI.py)
 **Terminal edition**
 
 ```bash
-python CodeLensCLI.py
+python scripts/CodeLensCLI.py
 ```
 
 Standard library only — `colorama` is used if
@@ -120,14 +120,15 @@ whole system.
 </td>
 <td width="50%" valign="top">
 
-### 🪟 [`CodeLens.py`](CodeLens.py)
+### 🪟 [`CodeLens.py`](scripts/CodeLens.py)
 **Desktop edition**
 
 ```bash
-python CodeLens.py
+pip install PySide6
+python scripts/CodeLens.py
 ```
 
-Needs one package — `pip install PySide6`.
+Needs one package — PySide6.
 Glassmorphism UI, custom accent colors, drag &
 drop, resizable panes, live preview, and a full
 details table.
@@ -140,6 +141,24 @@ details table.
 (`core.build_flexible_pattern`, `core._find_matches`, `core.add_file_to_state`, etc.) — there is
 exactly **one** implementation of the actual search behavior, not two copies that could drift
 apart.
+
+<br>
+
+## AI-agent interface
+
+CodeLens also ships a **read-only, machine-readable command interface** for AI coding agents
+(Claude Code, Codex, Gemini CLI, or any agent that can run a shell command). It returns one JSON
+object per call with exact line/column positions, pagination cursors and stable error codes.
+
+```bash
+python scripts/codelens_agent capabilities   # works from any directory
+python scripts/codelens_agent search parse_config --page-size 20
+python scripts/codelens_agent read src/app.py --around 42 --context 5
+```
+
+Needs Python 3.12+, standard library only. See
+[`docs/AI_AGENT_INTEGRATION.md`](docs/AI_AGENT_INTEGRATION.md) and the formal
+[JSON Schema](docs/schema/codelens-agent-v1.schema.json).
 
 <br>
 
@@ -264,12 +283,20 @@ their fixed semantic color regardless.
 
 ## Requirements
 
-```bash
-pip install PySide6
-```
+| Component | Needs |
+|---|---|
+| Terminal edition (`scripts/CodeLensCLI.py`) | Python 3 · standard library only (`colorama` optional; otherwise raw ANSI codes) |
+| Desktop edition (`scripts/CodeLens.py`) | `pip install PySide6` |
+| AI-agent interface (`scripts/codelens_agent`) | Python 3.12+ · standard library only |
+| Test suite (`tests/`) | Python 3.12+ and `pip install -r tests/requirements-test.txt` (`jsonschema`, test-only) |
 
-`CodeLensCLI.py` alone has no required third-party dependencies (`colorama` is used if present,
-otherwise it falls back to raw ANSI codes).
+Run the tests from the repository root (install the test requirement first — the run **fails**
+if it is missing, so the schema checks are never silently skipped):
+
+```bash
+pip install -r tests/requirements-test.txt
+python -m unittest discover -s tests
+```
 
 <br>
 
@@ -278,15 +305,26 @@ otherwise it falls back to raw ANSI codes).
 <br>
 
 ```
-CodeLensCLI.py      Terminal edition + shared search engine
-CodeLens.py         PySide6 desktop edition (imports CodeLensCLI.py's engine)
-shortcuts.json      Saved keyboard-shortcut overrides (created on first edit)
+scripts/
+  CodeLensCLI.py       Terminal edition + shared search engine
+  CodeLens.py          Desktop entry point (DPI setup, then app.main())
+  app.py, main_window.py, dialogs.py, widgets.py, theme.py,
+  results_render.py, persistence.py, native_context_menu.py
+                       PySide6 desktop edition (imports CodeLensCLI.py's engine)
+  installer_app.py     Install / uninstall wizard (PySide6)
+  codelens_agent/      Read-only JSON interface for AI agents
+docs/
+  AI_AGENT_INTEGRATION.md          Guide for the agent interface
+  schema/codelens-agent-v1.schema.json   Published JSON Schema
+tests/                 unittest suite (agent interface, schema, docs examples)
 Assets/
-  DarkModeIcons/    SVG icons, dark theme palette
-  LightModeIcons/   SVG icons, light theme palette
-  HoverIcons/       SVG icons, white (hover/checked state)
-  Screenshots/      README screenshots
-  app_icon.svg      Colorful app/window icon
+  DarkModeIcons/       SVG icons, dark theme palette
+  LightModeIcons/      SVG icons, light theme palette
+  HoverIcons/          SVG icons, white (hover/checked state)
+  Screenshots/         README screenshots
+  app_icon.ico         App/window icon
+shortcuts.json         Saved keyboard-shortcut overrides, written next to the running
+recent_folders.json    script/exe on first change (not checked in)
 ```
 
 </details>
