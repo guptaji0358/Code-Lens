@@ -73,6 +73,18 @@ def icon_path(name, theme):
     return os.path.join(ICON_DIRS[theme], f"{name}.svg")
 
 
+def style_menu(menu):
+    """
+    Marks a QMenu as a layered/composited window so the QSS `border-radius`
+    on QMenu (theme.py's build_stylesheet) clips to a smooth, anti-aliased
+    rounded rect - matching Windows 11's fluent context-menu look - instead
+    of Qt's default square-window bitmap mask, which leaves jagged corners.
+    Call this on every QMenu right after construction.
+    """
+    menu.setAttribute(Qt.WA_TranslucentBackground)
+    return menu
+
+
 def icon(name, theme):
     return QIcon(icon_path(name, theme))
 
@@ -242,6 +254,19 @@ def build_stylesheet(t, glass):
     QScrollBar::handle:vertical {{ background: {border}; border-radius: 6px; min-height: 24px; }}
     QScrollBar::handle:vertical:hover {{ background: {accent}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QMenu {{
+        background: {panel_bg}; border: 1px solid {border}; border-radius: 8px;
+        padding: 4px; color: {t['fg']};
+    }}
+    QMenu::item {{
+        background: transparent; border-radius: 4px; padding: 6px 28px 6px 12px;
+        margin: 1px 4px;
+    }}
+    QMenu::item:selected {{ background: {card_hover_bg}; color: {t['fg']}; }}
+    QMenu::item:disabled {{ color: {t['fg_dim']}; }}
+    QMenu::separator {{ height: 1px; background: {border_soft}; margin: 4px 10px; }}
+    QMenu::icon {{ padding-left: 8px; }}
+    QMenu::right-arrow {{ width: 8px; height: 8px; margin-right: 10px; }}
     """
 
 

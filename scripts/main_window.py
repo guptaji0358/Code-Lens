@@ -32,9 +32,11 @@ from PySide6.QtWidgets import (
 )
 
 import CodeLensCLI as core
+if sys.platform == "win32":
+    from native_context_menu import show_native_context_menu
 from theme import (
     APP_ICON_PATH, ACCENT_ICON_NAMES, THEMES, FONT_MONO,
-    icon, real_file_icon, tinted_icon, with_alpha, contrast_fg, build_stylesheet,
+    icon, real_file_icon, tinted_icon, with_alpha, contrast_fg, build_stylesheet, style_menu,
 )
 from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
@@ -340,7 +342,7 @@ class FinderWindow(QMainWindow):
         self._tool_buttons.append(self.filter_btn)
         header_row.addWidget(self.filter_btn)
 
-        self.filter_menu = QMenu(self)
+        self.filter_menu = style_menu(QMenu(self))
         self.filter_btn.setMenu(self.filter_menu)
         self.filter_menu.aboutToShow.connect(self._populate_filter_menu)
 
@@ -1484,14 +1486,14 @@ class FinderWindow(QMainWindow):
         if not selected:
             return
 
-        menu = QMenu(self)
+        menu = style_menu(QMenu(self))
         remove_label = f"Remove {len(selected)} file(s)" if len(selected) > 1 else "Remove file"
         menu.addAction(remove_label).triggered.connect(self.on_remove)
 
         reveal_action = menu.addAction("Reveal in Explorer")
         reveal_action.triggered.connect(lambda checked=False, e=selected[0]: self._reveal_in_explorer(e.path))
 
-        open_with_menu = menu.addMenu("Open with")
+        open_with_menu = style_menu(menu.addMenu("Open with"))
         editors = core.find_installed_editors()
         if editors:
             icon_provider = QFileIconProvider()
@@ -1505,7 +1507,23 @@ class FinderWindow(QMainWindow):
             no_editors = open_with_menu.addAction("No editors found on this system")
             no_editors.setEnabled(False)
 
+        if sys.platform == "win32" and len(selected) == 1:
+            menu.addSeparator()
+            more_action = menu.addAction("Show more options")
+            more_action.triggered.connect(
+                lambda checked=False, e=selected[0]: self._show_native_context_menu(e.path))
+
         menu.exec(self.file_list.viewport().mapToGlobal(pos))
+
+    def _show_native_context_menu(self, path):
+        if not os.path.exists(path):
+            self._error("Couldn't show options", f"This file no longer exists on disk:\n\n{path}")
+            return
+        global_pos = self.cursor().pos()
+        hwnd = int(self.file_list.window().winId())
+        if not show_native_context_menu(hwnd, path, global_pos.x(), global_pos.y()):
+            self._error("Couldn't show options",
+                        "The Windows shell context menu couldn't be opened for this item.")
 
     def _open_with_editor(self, exe_path, entries):
         try:
@@ -1552,7 +1570,7 @@ class FinderWindow(QMainWindow):
     def _build_recent_menu(self):
         t = self._effective_theme()
         folders = load_recent_folders()
-        menu = QMenu(self)
+        menu = style_menu(QMenu(self))
         if not folders:
             action = menu.addAction("No recent folders")
             action.setEnabled(False)
