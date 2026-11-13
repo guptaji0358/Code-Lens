@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codelens.local/schema/codelens-agent-v1.schema.json",
+  "title": "codelens-agent interface v1 (schema_version 1.0)",
+  "description": "Every stdout response of `python -m codelens_agent` (except --help). Unknown extra fields may appear in later 1.x releases and must be ignored by clients.",
+  "oneOf": [
+    {"$ref": "#/$defs/errorResponse"},
+    {"$ref": "#/$defs/capabilitiesResponse"},
+    {"$ref": "#/$defs/infoResponse"},
+    {"$ref": "#/$defs/readResponse"},
+    {"$ref": "#/$defs/searchResponse"}
+  ],
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "errorCode": {"enum": ["invalid_argument", "invalid_request", "unknown_command", "path_not_found", "path_outside_root", "permission_denied", "not_a_file", "not_text_file", "file_too_large", "limit_exceeded", "invalid_cursor", "stale_cursor", "internal_error"]},
+    "warning": {
+      "type": "object",
+      "required": ["code", "message", "path"],
+      "properties": {
+        "code": {"enum": ["output_truncated", "content_not_inspected", "results_truncated", "file_limit_reached", "file_skipped"]},
+        "message": {"type": "string"},
+        "path": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "path", "hint", "retryable"],
+      "properties": {
+        "code": {"$ref": "#/$defs/errorCode"},
+        "message": {"type": "string"},
+        "path": {"$ref": "#/$defs/nullableString"},
+        "hint": {"$ref": "#/$defs/nullableString"},
+        "retryable": {"type": "boolean"}
+      }
+    },
+    "envelopeBase": {
+      "type": "object",
+      "required": ["schema_version", "interface_version", "tool", "success", "operation", "data", "warnings", "errors"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "interface_version": {"const": "1"},
+        "tool": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {"name": {"const": "codelens-agent"}, "version": {"type": "string"}}
+        },
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/warning"}}
+      }
+    },
+    "errorResponse": {
+      "allOf": [{"$ref": "#/$defs/envelopeBase"}],
+      "properties": {
+        "success": {"const": false},
+        "operation": {"$ref": "#/$defs/nullableString"},
+        "data": {"type": "null"},
+        "errors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/error"}}
+      }
+    },
+    "successBase": {
+      "allOf": [{"$ref": "#/$defs/envelopeBase"}],
+      "properties": {"success": {"const": true}, "errors": {"type": "array", "maxItems": 0}}
+    },
+    "capabilitiesResponse": {
+      "allOf": [{"$ref": "#/$defs/successBase"}],
+      "properties": {
+        "operation": {"const": "capabilities"},
+        "data": {
+          "type": "object",
+          "required": ["tool", "interface_version", "schema_version", "read_only", "commands", "global_args", "planned_commands", "unsupported", "search_modes", "output_modes", "pagination", "request_protocol", "search_strategies", "warning_codes", "documentation", "roots", "limits", "line_numbering", "encodings_tried", "exit_codes", "error_codes", "deprecations"],
+          "properties": {
+            "read_only": {"const": true},
+            "tool": {"type": "object", "required": ["name", "version"], "properties": {"name": {"const": "codelens-agent"}, "version": {"type": "string"}}},
+            "interface_version": {"const": "1"},
+            "schema_version": {"const": "1.0"},
+            "planned_commands": {"type": "array", "items": {"type": "string"}},
+            "search_modes": {"type": "array", "items": {"type": "object", "required": ["name", "default", "description", "whitespace_sensitive", "allows_whitespace_in_query", "supports_multiline"], "properties": {"name": {"enum": ["flexible", "literal", "word"]}, "default": {"type": "boolean"}, "description": {"type": "string"}, "whitespace_sensitive": {"type": "boolean"}, "allows_whitespace_in_query": {"type": "boolean"}, "supports_multiline": {"type": "boolean"}}}},
+            "output_modes": {"type": "array", "items": {"type": "object", "required": ["name", "flag", "description"], "properties": {"name": {"enum": ["matches", "count_only", "files_only"]}, "flag": {"type": ["string", "null"]}, "description": {"type": "string"}}}},
+            "pagination": {
+              "type": "object",
+              "required": ["supported", "commands", "page_size_argument", "alternative_argument", "default_page_size", "max_page_size", "cursor_argument", "cursor_response_field", "cursor_opaque", "cursor_max_chars", "cursor_errors", "paginated_outputs", "unpaginated_outputs", "completeness_fields", "more_results_values", "stateless", "consistency"],
+              "properties": {
+                "supported": {"type": "boolean"}, "commands": {"type": "array", "items": {"type": "string"}},
+                "page_size_argument": {"type": "string"}, "alternative_argument": {"type": "string"},
+                "default_page_size": {"type": "integer"}, "max_page_size": {"type": "integer"},
+                "cursor_argument": {"type": "string"}, "cursor_response_field": {"type": "string"},
+                "cursor_opaque": {"type": "boolean"}, "cursor_max_chars": {"type": "integer"},
+                "cursor_errors": {"type": "array", "items": {"type": "string"}},
+                "paginated_outputs": {"type": "array", "items": {"type": "string"}},
+                "unpaginated_outputs": {"type": "array", "items": {"type": "string"}},
+                "completeness_fields": {"type": "array", "items": {"type": "string"}},
+                "more_results_values": {"type": "object", "additionalProperties": {"type": "string"}},
+                "stateless": {"type": "boolean"}, "consistency": {"type": "string"}
+              }
+            },
+            "request_protocol": {
+              "type": "object",
+              "required": ["flag", "source", "shape", "args_use", "cannot_combine_with_command"],
+              "properties": {"flag": {"type": "string"}, "source": {"type": "string"}, "shape": {"type": "object", "additionalProperties": {"type": "string"}}, "args_use": {"type": "string"}, "cannot_combine_with_command": {"type": "boolean"}}
+            },
+            "search_strategies": {"type": "object", "additionalProperties": {"type": "string"}},
+            "warning_codes": {"type": "object", "additionalProperties": {"type": "string"}},
+            "documentation": {"type": "object", "required": ["note", "agent_guide", "json_schema"], "properties": {"note": {"type": "string"}, "agent_guide": {"type": "string"}, "json_schema": {"type": "string"}}},
+            "line_numbering": {"type": "object", "required": ["base", "line_breaks", "note"], "properties": {"base": {"const": 1}, "line_breaks": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}}},
+            "encodings_tried": {"type": "array", "items": {"type": "string"}},
+            "deprecations": {"type": "array", "items": {"type": "string"}},
+            "commands": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["summary", "args"],
+                "properties": {"summary": {"type": "string"}, "args": {"type": "array", "items": {"$ref": "#/$defs/argSpec"}}}
+              }
+            },
+            "global_args": {"type": "array", "items": {"$ref": "#/$defs/argSpec"}},
+            "roots": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "limits": {"type": "object", "additionalProperties": {"type": "number"}},
+            "unsupported": {"type": "array", "items": {"type": "string"}},
+            "error_codes": {"type": "array", "items": {"$ref": "#/$defs/errorCode"}},
+            "exit_codes": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "argSpec": {
+      "type": "object",
+      "required": ["name", "type", "required", "repeatable", "default", "description"],
+      "properties": {
+        "name": {"type": "string"},
+        "type": {"enum": ["string", "integer", "boolean"]},
+        "required": {"type": "boolean"},
+        "repeatable": {"type": "boolean"},
+        "default": {"description": "null when there is no default"},
+        "description": {"type": "string"}
+      }
+    },
+    "infoResponse": {
+      "allOf": [{"$ref": "#/$defs/successBase"}],
+      "properties": {
+        "operation": {"const": "info"},
+        "data": {
+          "type": "object",
+          "required": ["file", "absolute_path", "kind", "size_bytes", "modified", "modified_epoch", "is_text", "content_inspected", "encoding", "line_count", "line_ending", "ends_with_newline"],
+          "properties": {
+            "file": {"type": "string"},
+            "absolute_path": {"type": "string"},
+            "kind": {"const": "file"},
+            "size_bytes": {"type": "integer", "minimum": 0},
+            "modified": {"type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"},
+            "modified_epoch": {"type": "number"},
+            "is_text": {"type": "boolean"},
+            "content_inspected": {"type": "boolean"},
+            "encoding": {"$ref": "#/$defs/nullableString"},
+            "line_count": {"type": ["integer", "null"], "minimum": 0},
+            "line_ending": {"enum": ["none", "crlf", "lf", "cr", "mixed", null]},
+            "ends_with_newline": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "lineRow": {
+      "type": "object",
+      "required": ["line", "text"],
+      "properties": {"line": {"type": "integer", "minimum": 1}, "text": {"type": "string"}}
+    },
+    "readResponse": {
+      "allOf": [{"$ref": "#/$defs/successBase"}],
+      "properties": {
+        "operation": {"const": "read"},
+        "data": {
+          "type": "object",
+          "required": ["file", "absolute_path", "total_lines", "encoding", "line_ending", "ranges", "truncated"],
+          "properties": {
+            "file": {"type": "string"},
+            "absolute_path": {"type": "string"},
+            "total_lines": {"type": "integer", "minimum": 0},
+            "encoding": {"type": "string"},
+            "line_ending": {"enum": ["none", "crlf", "lf", "cr", "mixed"]},
+            "truncated": {"type": "boolean"},
+            "ranges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["requested", "start", "end", "clamped_to_file_end", "truncated", "next_start", "truncated_long_lines", "lines"],
+                "properties": {
+                  "requested": {"type": "string"},
+                  "start": {"type": "integer", "minimum": 1},
+                  "end": {"type": "integer", "minimum": 0},
+                  "clamped_to_file_end": {"type": "boolean"},
+                  "truncated": {"type": "boolean"},
+                  "next_start": {"type": ["integer", "null"], "minimum": 1},
+                  "truncated_long_lines": {"type": "array", "items": {"type": "integer"}},
+                  "lines": {"type": "array", "items": {"$ref": "#/$defs/lineRow"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "match": {
+      "type": "object",
+      "required": ["line", "end_line", "column", "end_column", "content", "matched_text", "strategy", "exact_text_match", "case_sensitive", "fallback_used", "comments_stripped", "comments_stripped_from", "content_truncated", "context_before", "context_after"],
+      "properties": {
+        "line": {"type": "integer", "minimum": 1},
+        "end_line": {"type": "integer", "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "end_column": {"type": "integer", "minimum": 0},
+        "content": {"type": "string"},
+        "matched_text": {"type": "string"},
+        "strategy": {"enum": ["literal", "word", "as_typed", "whitespace_insensitive", "snippet_comments_removed", "file_comments_stripped"]},
+        "exact_text_match": {"type": "boolean"},
+        "case_sensitive": {"type": "boolean"},
+        "fallback_used": {"type": "boolean"},
+        "comments_stripped": {"type": "boolean"},
+        "comments_stripped_from": {"enum": ["query", "file", null]},
+        "content_truncated": {"type": "boolean"},
+        "context_before": {"type": "array", "items": {"$ref": "#/$defs/lineRow"}},
+        "context_after": {"type": "array", "items": {"$ref": "#/$defs/lineRow"}}
+      }
+    },
+    "searchResponse": {
+      "allOf": [{"$ref": "#/$defs/successBase"}],
+      "properties": {
+        "operation": {"const": "search"},
+        "data": {
+          "type": "object",
+          "required": ["query", "mode", "multiline", "case_sensitive", "comment_fallback", "results", "total_matches", "files_with_matches", "files_searched", "files_skipped", "truncated", "truncated_reason", "positions", "output", "page_size", "limit_reached", "more_results", "complete", "next_cursor"],
+          "properties": {
+            "query": {"type": "string"},
+            "mode": {"enum": ["flexible", "literal", "word"]},
+            "multiline": {"type": "boolean"},
+            "case_sensitive": {"type": "boolean"},
+            "comment_fallback": {"type": "boolean"},
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["file", "encoding", "matches"],
+                "properties": {"file": {"type": "string"}, "encoding": {"type": "string"}, "matches": {"type": "array", "items": {"$ref": "#/$defs/match"}}}
+              }
+            },
+            "total_matches": {"type": ["integer", "null"], "minimum": 0, "description": "null only for an unfinished files_only scan"},
+            "files_with_matches": {"type": "integer", "minimum": 0},
+            "files_searched": {"type": "integer", "minimum": 0},
+            "files_skipped": {"type": "object", "additionalProperties": {"type": "integer"}},
+            "truncated": {"type": "boolean"},
+            "truncated_reason": {"enum": ["max_results", "time_budget_exceeded", "byte_budget_exceeded", "file_limit_reached", null]},
+            "positions": {
+              "type": "object",
+              "required": ["base", "end_column", "unit"],
+              "properties": {"base": {"const": 1}, "end_column": {"const": "inclusive"}, "unit": {"const": "characters"}}
+            },
+            "output": {"enum": ["matches", "count_only", "files_only"]},
+            "page_size": {"type": "integer", "minimum": 1},
+            "limit_reached": {"type": "boolean"},
+            "more_results": {"enum": ["none", "confirmed", "unknown"]},
+            "complete": {"type": "boolean"},
+            "next_cursor": {"type": ["string", "null"], "maxLength": 512},
+            "count_complete": {"type": "boolean", "description": "count_only output only"},
+            "partial_reason": {"enum": ["max_results", "time_budget_exceeded", "byte_budget_exceeded", "file_limit_reached", null], "description": "count_only output only"},
+            "files": {
+              "type": "array",
+              "description": "files_only output only",
+              "items": {
+                "type": "object",
+                "required": ["file", "encoding", "match_count"],
+                "properties": {"file": {"type": "string"}, "encoding": {"type": "string"}, "match_count": {"type": "integer", "minimum": 1}}
+              }
+            },
+            "total_matches_known": {"type": "boolean", "description": "files_only output only"}
+          },
+          "allOf": [
+            {"if": {"properties": {"output": {"const": "count_only"}}}, "then": {"required": ["count_complete", "partial_reason"]}},
+            {"if": {"properties": {"output": {"const": "files_only"}}}, "then": {"required": ["files", "total_matches_known"]}}
+          ]
+        }
+      }
+    },
+    "request": {
+      "title": "JSON request accepted by --request",
+      "type": "object",
+      "required": ["operation"],
+      "properties": {
+        "operation": {"enum": ["capabilities", "info", "read", "search"]},
+        "args": {"type": "object"},
+        "roots": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "args_info": {"type": "object", "required": ["file"], "additionalProperties": false, "properties": {"file": {"type": "string", "minLength": 1}}},
+    "args_read": {
+      "type": "object", "required": ["file"], "additionalProperties": false,
+      "properties": {
+        "file": {"type": "string", "minLength": 1},
+        "lines": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^\\s*\\d+\\s*(-\\s*\\d+)?\\s*$"}},
+        "around": {"type": "integer", "minimum": 1},
+        "context": {"type": "integer", "minimum": 0, "maximum": 200}
+      },
+      "description": "lines and around are mutually exclusive; context requires around."
+    },
+    "args_search": {
+      "type": "object", "required": ["query"], "additionalProperties": false,
+      "properties": {
+        "query": {"type": "string", "minLength": 1, "maxLength": 10000},
+        "paths": {"type": "array", "maxItems": 100, "items": {"type": "string"}},
+        "mode": {"enum": ["flexible", "literal", "word"]},
+        "multiline": {"type": "boolean"},
+        "case_sensitive": {"type": "boolean"},
+        "ext": {"type": "array", "items": {"type": "string"}},
+        "include": {"type": "array", "items": {"type": "string"}},
+        "exclude": {"type": "array", "items": {"type": "string"}},
+        "context": {"type": "integer", "minimum": 0, "maximum": 20},
+        "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "page_size": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "cursor": {"type": "string", "maxLength": 512},
+        "count_only": {"type": "boolean"},
+        "files_only": {"type": "boolean"},
+        "comment_fallback": {"type": "boolean"}
+      },
+      "description": "Mutually exclusive: count_only/files_only; page_size/max_results; cursor with count_only. word mode needs a single token."
+    }
+  }
+}
