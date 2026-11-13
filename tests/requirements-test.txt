@@ -1,0 +1,3 @@
+# Test-only dependencies (codelens_agent itself needs none).
+# Install before running the suite:  pip install -r tests/requirements-test.txt
+jsonschema>=4.18
