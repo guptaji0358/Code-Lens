@@ -712,6 +712,8 @@ class CommandReferenceDialog(QDialog):
         self._detail = QTextBrowser()
         self._detail.setOpenLinks(False)
         self._detail.setMinimumWidth(330)
+        # breathing room between the text and the pane's rounded border
+        self._detail.document().setDocumentMargin(18)
         body.addWidget(self._detail)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
@@ -789,12 +791,16 @@ class CommandReferenceDialog(QDialog):
     def _render(self, e):
         t = self._t
         esc = html.escape
-        mono = f"font-family:{FONT_MONO}; background:{t['bg_panel']};"
-        def pre(text):
-            return (f"<pre style='{mono} padding:8px; white-space:pre-wrap;'>"
-                    f"{esc(text)}</pre>")
+        def pre(text, kind="output"):
+            # a one-cell table = a real padded, bordered box (a bare <pre>
+            # background hugs the text and clips against the pane edge)
+            return (f"<table width='100%' cellspacing='0' cellpadding='11' border='1'"
+                    f" style='border-color:{t['border']}; border-style:solid;'>"
+                    f"<tr><td bgcolor='{t['bg_panel']}' style='padding-right:44px;'>"
+                    f"<pre style='font-family:{FONT_MONO}; margin:0; white-space:pre-wrap;"
+                    f" color:{t['fg']};'>{esc(text)}</pre></td></tr></table>")
         def h(text):
-            return f"<h4 style='color:{t['accent']}; margin:14px 0 4px 0;'>{text}</h4>"
+            return f"<h4 style='color:{t['accent']}; margin:18px 0 6px 0;'>{text}</h4>"
         rows = []
         for a in e["args"]:
             default = "-" if a["default"] is None else str(a["default"])
@@ -809,11 +815,11 @@ class CommandReferenceDialog(QDialog):
             desc = " ".join([a["description"]] + [f"[{x}]" for x in extra]).strip()
             ident = a.get("form") or a["name"]
             rows.append("<tr>" + "".join(
-                f"<td style='padding:3px 8px; border-bottom:1px solid {t['border']};'>{c}</td>"
+                f"<td style='padding:5px 10px; border-bottom:1px solid {t['border']};'>{c}</td>"
                 for c in (f"<code>{esc(ident)}</code>", esc(kind), esc(default), req, esc(desc))
             ) + "</tr>")
         table = ("<table cellspacing='0' width='100%'><tr>" + "".join(
-            f"<th align='left' style='padding:3px 8px; color:{t['fg_dim']};'>{c}</th>"
+            f"<th align='left' style='padding:5px 10px; color:{t['fg_dim']};'>{c}</th>"
             for c in ("Argument", "Type", "Default", "Status", "Description"))
             + "</tr>" + "".join(rows) + "</table>") if rows else "<p>No arguments.</p>"
         notes = "".join(f"<li>{esc(n)}</li>" for n in e["notes"])
