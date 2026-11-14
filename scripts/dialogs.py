@@ -6,6 +6,7 @@ panel.
 """
 
 import datetime
+import html
 import os
 import re
 
@@ -18,10 +19,12 @@ from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit, QButtonGroup,
     QStackedWidget, QKeySequenceEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QGraphicsOpacityEffect,
+    QAbstractItemView, QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QTextBrowser,
+    QSplitter,
 )
 
 import CodeLensCLI as core
+from codelens_agent import reference
 from theme import ACCENT_PRESETS, FONT_MONO, THEMES, with_alpha, contrast_fg, icon
 from widgets import ColorSwatch, GlassSwitch, GlassCheckbox, HoverToolButton, apply_glass_shadow
 from persistence import SHORTCUT_ACTIONS
@@ -566,6 +569,200 @@ class FileDetailsDialog(QDialog):
     def show_details(parent, t, files):
         dlg = FileDetailsDialog(parent, t, files)
         dlg.exec()
+
+
+class CommandReferenceDialog(QDialog):
+    """AI Command Reference: the read-only agent interface (MCP tools and CLI
+    commands) browsable in the GUI. All content comes from
+    codelens_agent.reference, which derives it from the live argparse parser,
+    MCP tool schemas and ops metadata - nothing is described here by hand.
+    Two categories (MCP Tools / CLI Commands), a search box that filters the
+    entry list, and copy buttons for the invocation syntax and the example."""
+
+    def __init__(self, parent, t, entries=None):
+        super().__init__(parent)
+        self._t = t
+        self._entries = entries if entries is not None else reference.build_catalogue()
+        self._kind = reference.MCP
+        self._shown = []
+        self.setWindowTitle("AI Command Reference")
+        self.resize(980, 600)
+        self.setStyleSheet(f"""
+            QDialog {{ background: {t['bg_panel']}; }}
+            QLabel {{ color: {t['fg']}; }}
+            QLineEdit {{ background: {t['bg_card']}; color: {t['fg']};
+                border: 1px solid {t['border']}; border-radius: 8px; padding: 7px 10px; }}
+            QListWidget, QTextBrowser {{ background: {t['bg_card']}; color: {t['fg']};
+                border: 1px solid {t['border']}; border-radius: 8px; }}
+            QSplitter::handle {{ background: transparent; }}
+            QListWidget::item {{ padding: 7px 8px; }}
+            QListWidget::item:selected {{ background: {t['accent']};
+                color: {contrast_fg(t['accent'])}; }}
+            QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
+                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+            QPushButton:disabled {{ background: {t['bg_card']}; color: {t['fg_dim']}; }}
+        """)
+        ghost = (f"QPushButton {{ background: transparent; color: {t['fg']};"
+                 f" border: 1px solid {t['border']}; }}"
+                 f"QPushButton:hover:!disabled {{ background: {t['bg_card']}; }}"
+                 f"QPushButton:checked {{ background: {t['accent']};"
+                 f" color: {contrast_fg(t['accent'])}; border-color: {t['accent']}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        title = QLabel("AI Command Reference")
+        title.setStyleSheet(f"font-weight: 700; font-size: 12.5pt; color: {t['fg']};")
+        layout.addWidget(title)
+
+        top = QHBoxLayout()
+        self._cat_buttons = {}
+        group = QButtonGroup(self)
+        for kind in (reference.MCP, reference.CLI):
+            b = QPushButton()
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(ghost)
+            b.clicked.connect(lambda checked=False, k=kind: self.set_category(k))
+            group.addButton(b)
+            top.addWidget(b)
+            self._cat_buttons[kind] = b
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search commands, arguments, descriptions...")
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._refilter)
+        top.addWidget(self._search, 1)
+        layout.addLayout(top)
+
+        # A splitter (not a fixed-width list) so narrow windows keep a readable
+        # detail pane; the minimum dialog size below guarantees that floor.
+        body = QSplitter(Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+        body.setHandleWidth(8)
+        self._list = QListWidget()
+        self._list.setMinimumWidth(150)
+        self._list.currentRowChanged.connect(self._show_row)
+        body.addWidget(self._list)
+        self._detail = QTextBrowser()
+        self._detail.setOpenLinks(False)
+        self._detail.setMinimumWidth(330)
+        body.addWidget(self._detail)
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
+        body.setSizes([220, 740])
+        layout.addWidget(body, 1)
+        self.setMinimumSize(560, 400)
+
+        row = QHBoxLayout()
+        self._copy_syntax = QPushButton("Copy syntax")
+        self._copy_example = QPushButton("Copy example")
+        for b, what in ((self._copy_syntax, "syntax"), (self._copy_example, "example")):
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda checked=False, w=what: self.copy(w))
+            row.addWidget(b)
+        self._status = QLabel("")
+        self._status.setStyleSheet(f"color: {t['fg_dim']};")
+        row.addWidget(self._status, 1)
+        close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        row.addWidget(close_btn)
+        layout.addLayout(row)
+
+        self.set_category(self._kind)
+
+    # -- state ---------------------------------------------------------------
+    def current_entry(self):
+        r = self._list.currentRow()
+        return self._shown[r] if 0 <= r < len(self._shown) else None
+
+    def visible_entries(self):
+        return list(self._shown)
+
+    def set_category(self, kind):
+        self._kind = kind
+        for k, b in self._cat_buttons.items():
+            n = len(reference.filter_entries(self._entries, "", k))
+            b.setText(f"{reference.CATEGORY_TITLES[k]} ({n})")
+            b.setChecked(k == kind)
+        self._refilter()
+
+    def _refilter(self, *_):
+        self._shown = reference.filter_entries(self._entries, self._search.text(), self._kind)
+        self._list.blockSignals(True)
+        self._list.clear()
+        for e in self._shown:
+            item = QListWidgetItem(f"{e['label']}\n{e['identifier']}")
+            item.setToolTip(e["summary"])
+            self._list.addItem(item)
+        self._list.blockSignals(False)
+        if self._shown:
+            self._list.setCurrentRow(0)
+            self._show_row(0)
+        else:
+            self._show_row(-1)
+
+    def _show_row(self, row):
+        e = self._shown[row] if 0 <= row < len(self._shown) else None
+        self._copy_syntax.setEnabled(e is not None)
+        self._copy_example.setEnabled(e is not None)
+        self._status.setText("")
+        self._detail.setHtml(self._render(e) if e else
+                             f"<p style='color:{self._t['fg_dim']}'>No commands match.</p>")
+
+    def copy(self, what="syntax"):
+        e = self.current_entry()
+        if e is None:
+            return False
+        QApplication.clipboard().setText(reference.copy_text(e, what))
+        self._status.setText(f"Copied {what}.")
+        return True
+
+    # -- rendering -----------------------------------------------------------
+    def _render(self, e):
+        t = self._t
+        esc = html.escape
+        mono = f"font-family:{FONT_MONO}; background:{t['bg_panel']};"
+        def pre(text):
+            return (f"<pre style='{mono} padding:8px; white-space:pre-wrap;'>"
+                    f"{esc(text)}</pre>")
+        def h(text):
+            return f"<h4 style='color:{t['accent']}; margin:14px 0 4px 0;'>{text}</h4>"
+        rows = []
+        for a in e["args"]:
+            default = "-" if a["default"] is None else str(a["default"])
+            req = "required" if a["required"] else "optional"
+            kind = a["type"] + (" (repeatable)" if a["repeatable"] and
+                                not a["type"].startswith("array") else "")
+            extra = []
+            if a.get("choices"):
+                extra.append("one of: " + ", ".join(map(str, a["choices"])))
+            if a.get("bounds"):
+                extra.append(", ".join(f"{k}={v}" for k, v in a["bounds"].items()))
+            desc = " ".join([a["description"]] + [f"[{x}]" for x in extra]).strip()
+            ident = a.get("form") or a["name"]
+            rows.append("<tr>" + "".join(
+                f"<td style='padding:3px 8px; border-bottom:1px solid {t['border']};'>{c}</td>"
+                for c in (f"<code>{esc(ident)}</code>", esc(kind), esc(default), req, esc(desc))
+            ) + "</tr>")
+        table = ("<table cellspacing='0' width='100%'><tr>" + "".join(
+            f"<th align='left' style='padding:3px 8px; color:{t['fg_dim']};'>{c}</th>"
+            for c in ("Argument", "Type", "Default", "Status", "Description"))
+            + "</tr>" + "".join(rows) + "</table>") if rows else "<p>No arguments.</p>"
+        notes = "".join(f"<li>{esc(n)}</li>" for n in e["notes"])
+        return (f"<h3 style='margin:0;'>{esc(e['label'])}</h3>"
+                f"<p><code>{esc(e['identifier'])}</code> &nbsp;|&nbsp; "
+                f"<b>{esc(e['permission'])}</b> - {esc(e['permission_note'])}</p>"
+                f"<p>{esc(e['summary'])}</p>"
+                + h("Syntax") + pre(e["syntax"])
+                + h("Arguments") + table
+                + h("Example") + pre(e["example"])
+                + h("Expected output") + pre(e["output"])
+                + h("Notes") + f"<ul>{notes}</ul>")
+
+    @staticmethod
+    def show_reference(parent, t):
+        CommandReferenceDialog(parent, t).exec()
 
 
 # --------------------------------------------------------------------------

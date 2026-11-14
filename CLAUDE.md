@@ -134,6 +134,13 @@ stdio MCP server over the same `ops`/`Sandbox`. `tools.py` (catalogue, no SDK im
 optional: `pip install -r requirements-mcp.txt`; the CLI must never import it. Tests:
 `tests/test_mcp_*.py` (SDK-dependent ones skip without `mcp`).
 
+**AI Command Reference (GUI):** `scripts/codelens_agent/reference.py` builds the catalogue
+(pure stdlib, no Qt/MCP SDK) by introspecting the argparse parser in `cli.py`, `mcp_server/tools.py`
+`TOOLS` and `ops.COMMANDS`, and observes output shapes from real operation runs. Never hand-write
+command info in the GUI; only `EXAMPLE_ARGS` values are authored. `dialogs.CommandReferenceDialog`
+renders it (toolbar "Commands" button -> `FinderWindow.on_show_commands`). Tests:
+`tests/test_command_reference.py` (GUI part skips without PySide6).
+
 ## Persisted files
 
 Written next to the running script/exe (`BASE_DIR` in `theme.py`, resolved via

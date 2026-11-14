@@ -111,6 +111,15 @@ Global options (accepted anywhere): `--root DIR` (repeatable; default cwd), `--r
 (JSON request; `-` = stdin), `--verbose` (stderr diagnostics). `--help` prints human text and is
 the only non-JSON output.
 
+> **In the desktop app:** the toolbar's **Commands** button opens the *AI Command Reference*
+> — every MCP tool and CLI command with its syntax, arguments (type, default, required),
+> an example, the expected output structure and its permission class (all read-only), with
+> search and *Copy syntax* / *Copy example*. It is generated at runtime from the CLI parser,
+> the MCP tool schemas and `ops.COMMANDS` (`scripts/codelens_agent/reference.py`), so it
+> always matches the code; adding a command or argument there needs no GUI change. Only the
+> example argument values (`reference.EXAMPLE_ARGS`) are authored, and tests run them
+> against the real operations.
+
 ### 3.1 `capabilities`
 No arguments. Returns versions, commands (with argument specs), search modes, output modes,
 pagination description, limits, unsupported features, exit/error codes, active roots.

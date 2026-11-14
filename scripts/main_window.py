@@ -42,7 +42,7 @@ from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
     make_tool_button, BusyOverlay,
 )
-from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel
+from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel, CommandReferenceDialog
 from persistence import (
     SHORTCUT_ACTIONS, load_shortcuts, save_shortcuts,
     load_recent_folders, save_recent_folders, remember_recent_folder,
@@ -253,8 +253,10 @@ class FinderWindow(QMainWindow):
                                              tooltip="View full details for every loaded file")
         self.btn_recent = make_tool_button("Recent", "lines", self.on_show_recent,
                                             tooltip="Reopen a recently used folder")
+        self.btn_commands = make_tool_button("Commands", "info", self.on_show_commands,
+                                              tooltip="AI Command Reference: MCP tools and CLI commands")
         for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
-                  self.btn_reset, self.btn_clear, self.btn_details):
+                  self.btn_reset, self.btn_clear, self.btn_details, self.btn_commands):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
         toolbar.addStretch()
@@ -1738,6 +1740,9 @@ class FinderWindow(QMainWindow):
             self._info("File Details", "No files loaded yet - add some first.")
             return
         FileDetailsDialog.show_details(self, self._effective_theme(), self.state.files)
+
+    def on_show_commands(self):
+        CommandReferenceDialog.show_reference(self, self._effective_theme())
 
     def on_clear_results(self):
         self._clear_results()
