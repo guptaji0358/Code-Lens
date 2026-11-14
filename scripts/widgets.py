@@ -6,9 +6,9 @@ color swatch, hover-aware icon buttons, group-by-folder tree row).
 
 from PySide6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize, Property,
-    QTimer, Signal,
+    QTimer, Signal, QSequentialAnimationGroup, QPauseAnimation,
 )
-from PySide6.QtGui import QIcon, QPainter, QColor, QPen, QLinearGradient, QFontMetrics
+from PySide6.QtGui import QIcon, QPainter, QColor, QPen, QLinearGradient, QFontMetrics, QPainterPath
 from PySide6.QtWidgets import (
     QWidget, QLabel, QToolButton, QRadioButton, QAbstractButton, QGraphicsDropShadowEffect,
     QFrame, QVBoxLayout, QProgressBar, QPushButton,
@@ -446,6 +446,150 @@ class ColorSwatch(QAbstractButton):
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
+
+
+# --------------------------------------------------------------------------
+# HOVER-REVEALED COPY BUTTON (AI Command Reference code boxes)
+# --------------------------------------------------------------------------
+def _mix(a, b, t):
+    """Linear blend of two QColors (t=0 -> a, t=1 -> b)."""
+    return QColor(round(a.red() + (b.red() - a.red()) * t),
+                  round(a.green() + (b.green() - a.green()) * t),
+                  round(a.blue() + (b.blue() - a.blue()) * t),
+                  round(a.alpha() + (b.alpha() - a.alpha()) * t))
+
+
+class HoverCopyButton(QAbstractButton):
+    """A small icon button that stays invisible until its owner reveals it
+    (`set_revealed(True)` on hover/focus), fading in; `confirm()` flashes the
+    background to the theme's success color with a check mark and eases back.
+    While hidden it ignores the mouse (so text beneath stays selectable) but
+    remains focusable: keyboard focus reveals it, Space/Enter activates it."""
+
+    focusChanged = Signal()
+
+    SIZE = 30
+
+    def __init__(self, t, tooltip, parent=None):
+        super().__init__(parent)
+        self._t = t
+        self._reveal = 0.0
+        self._flash = 0.0
+        self._revealed = False
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip(tooltip)
+        self.setAccessibleName(tooltip)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._reveal_anim = QPropertyAnimation(self, b"reveal", self)
+        self._reveal_anim.setEasingCurve(QEasingCurve.OutCubic)
+        # flash: ease to 1, hold so the confirmation is readable, ease back
+        self._flash_anim = QSequentialAnimationGroup(self)
+        up = QPropertyAnimation(self, b"flash", self)
+        up.setDuration(140)
+        up.setStartValue(0.0)
+        up.setEndValue(1.0)
+        up.setEasingCurve(QEasingCurve.OutCubic)
+        hold = QPauseAnimation(900, self)
+        down = QPropertyAnimation(self, b"flash", self)
+        down.setDuration(420)
+        down.setStartValue(1.0)
+        down.setEndValue(0.0)
+        down.setEasingCurve(QEasingCurve.InOutCubic)
+        for a in (up, hold, down):
+            self._flash_anim.addAnimation(a)
+
+    # animated properties ---------------------------------------------------
+    def _get_reveal(self):
+        return self._reveal
+
+    def _set_reveal(self, v):
+        self._reveal = v
+        self.update()
+
+    def _get_flash(self):
+        return self._flash
+
+    def _set_flash(self, v):
+        self._flash = v
+        self.update()
+
+    reveal = Property(float, _get_reveal, _set_reveal)
+    flash = Property(float, _get_flash, _set_flash)
+
+    # behaviour -------------------------------------------------------------
+    def is_revealed(self):
+        return self._revealed
+
+    def set_revealed(self, on):
+        on = bool(on) or self.hasFocus()
+        if on == self._revealed:
+            return
+        self._revealed = on
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not on)
+        self._reveal_anim.stop()
+        self._reveal_anim.setDuration(170 if on else 220)
+        self._reveal_anim.setStartValue(self._reveal)
+        self._reveal_anim.setEndValue(1.0 if on else 0.0)
+        self._reveal_anim.start()
+
+    def confirm(self):
+        """Visual confirmation of a successful copy."""
+        self._flash_anim.stop()
+        self._flash_anim.start()
+
+    def is_confirming(self):
+        return self._flash_anim.state() != QSequentialAnimationGroup.Stopped
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.set_revealed(True)
+        self.focusChanged.emit()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.focusChanged.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.click()
+            return
+        super().keyPressEvent(e)
+
+    def paintEvent(self, _event):
+        a = self._reveal
+        if a <= 0.001:
+            return
+        t = self._t
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setOpacity(a)
+        hover = self.underMouse() or self.isDown()
+        base = QColor(t["bg_card_hover"] if hover else t["bg_card"])
+        ok = QColor(t["ok"])
+        bg = _mix(base, ok, self._flash)
+        edge = _mix(QColor(t["border"]), ok, self._flash)
+        fg = _mix(QColor(t["fg"] if hover else t["fg_dim"]), QColor(contrast_fg(t["ok"])), self._flash)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.hasFocus():
+            edge = QColor(t["accent"])
+        p.setPen(QPen(edge, 1.4 if self.hasFocus() else 1.0))
+        p.setBrush(bg)
+        p.drawRoundedRect(r, 8, 8)
+        c = r.center()
+        pen = QPen(fg, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        if self._flash > 0.5:
+            path = QPainterPath()
+            path.moveTo(c.x() - 5.5, c.y() + 0.5)
+            path.lineTo(c.x() - 1.5, c.y() + 4.5)
+            path.lineTo(c.x() + 5.5, c.y() - 4)
+            p.drawPath(path)
+        else:
+            p.drawRoundedRect(QRectF(c.x() - 3, c.y() - 6.5, 9, 9.5), 2, 2)
+            p.drawRoundedRect(QRectF(c.x() - 6.5, c.y() - 3, 9, 9.5), 2, 2)
 
 
 # --------------------------------------------------------------------------

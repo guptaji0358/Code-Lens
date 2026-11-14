@@ -11,22 +11,24 @@ import os
 import re
 
 from PySide6.QtCore import (
-    Qt, QTimer, QRect, QPoint, QSize, QEasingCurve, QPropertyAnimation,
+    Qt, QTimer, QEvent, QRectF, QRect, QPoint, QSize, QEasingCurve, QPropertyAnimation,
     QParallelAnimationGroup, Signal,
 )
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut, QFont, QColor
+from PySide6.QtGui import (
+    QIcon, QKeySequence, QShortcut, QFont, QColor, QCursor, QPainter, QFontMetrics,
+)
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit, QButtonGroup,
     QStackedWidget, QKeySequenceEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QTextBrowser,
-    QSplitter,
+    QSplitter, QStyledItemDelegate, QStyle,
 )
 
 import CodeLensCLI as core
 from codelens_agent import reference
 from theme import ACCENT_PRESETS, FONT_MONO, THEMES, with_alpha, contrast_fg, icon
-from widgets import ColorSwatch, GlassSwitch, GlassCheckbox, HoverToolButton, apply_glass_shadow
+from widgets import ColorSwatch, GlassSwitch, GlassCheckbox, HoverToolButton, HoverCopyButton, apply_glass_shadow
 from persistence import SHORTCUT_ACTIONS
 
 
@@ -571,6 +573,62 @@ class FileDetailsDialog(QDialog):
         dlg.exec()
 
 
+class _EntryDelegate(QStyledItemDelegate):
+    """Two-line entry row for the command list: bold label over a dim
+    monospace identifier, with real horizontal/vertical padding and a rounded
+    selection/hover chip (the stock item text hugged the list border)."""
+
+    PAD_X, PAD_Y, GAP = 14, 9, 3
+
+    def __init__(self, t, parent=None):
+        super().__init__(parent)
+        self._t = t
+
+    def _fonts(self, base):
+        bold = QFont(base)
+        bold.setBold(True)
+        mono = QFont(FONT_MONO.split(",")[0].strip(" '\""))
+        mono.setPointSizeF(max(base.pointSizeF() - 0.5, 7))
+        return bold, mono
+
+    def sizeHint(self, option, index):
+        bold, mono = self._fonts(option.font)
+        h = (QFontMetrics(bold).height() + QFontMetrics(mono).height()
+             + self.GAP + 2 * self.PAD_Y + 4)
+        return QSize(option.rect.width(), h)
+
+    def paint(self, painter, option, index):
+        t = self._t
+        label, _, ident = str(index.data(Qt.DisplayRole)).partition("\n")
+        sel = bool(option.state & QStyle.State_Selected)
+        hov = bool(option.state & QStyle.State_MouseOver)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        chip = QRectF(option.rect).adjusted(6, 2, -6, -2)
+        if sel or hov:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(t["accent"]) if sel else QColor(t["bg_card_hover"]))
+            painter.drawRoundedRect(chip, 8, 8)
+        fg = QColor(contrast_fg(t["accent"])) if sel else QColor(t["fg"])
+        dim = QColor(contrast_fg(t["accent"])) if sel else QColor(t["fg_dim"])
+        if sel:
+            dim.setAlphaF(0.8)
+        bold, mono = self._fonts(option.font)
+        fb, fm = QFontMetrics(bold), QFontMetrics(mono)
+        x = int(chip.left()) + self.PAD_X - 6
+        w = int(chip.width()) - 2 * (self.PAD_X - 6) - 6
+        y = int(chip.top()) + self.PAD_Y + 2
+        painter.setFont(bold)
+        painter.setPen(fg)
+        painter.drawText(x, y, w, fb.height(), Qt.AlignLeft | Qt.AlignVCenter,
+                         fb.elidedText(label, Qt.ElideRight, w))
+        painter.setFont(mono)
+        painter.setPen(dim)
+        painter.drawText(x, y + fb.height() + self.GAP, w, fm.height(),
+                         Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(ident, Qt.ElideRight, w))
+        painter.restore()
+
+
 class CommandReferenceDialog(QDialog):
     """AI Command Reference: the read-only agent interface (MCP tools and CLI
     commands) browsable in the GUI. All content comes from
@@ -595,9 +653,9 @@ class CommandReferenceDialog(QDialog):
             QListWidget, QTextBrowser {{ background: {t['bg_card']}; color: {t['fg']};
                 border: 1px solid {t['border']}; border-radius: 8px; }}
             QSplitter::handle {{ background: transparent; }}
-            QListWidget::item {{ padding: 7px 8px; }}
-            QListWidget::item:selected {{ background: {t['accent']};
-                color: {contrast_fg(t['accent'])}; }}
+            QListWidget {{ padding: 4px 0; outline: 0; }}
+            QToolTip {{ background: {t['bg_card']}; color: {t['fg']};
+                border: 1px solid {t['border']}; padding: 4px 8px; }}
             QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
                 border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
             QPushButton:disabled {{ background: {t['bg_card']}; color: {t['fg_dim']}; }}
@@ -609,10 +667,11 @@ class CommandReferenceDialog(QDialog):
                  f" color: {contrast_fg(t['accent'])}; border-color: {t['accent']}; }}")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
         title = QLabel("AI Command Reference")
-        title.setStyleSheet(f"font-weight: 700; font-size: 12.5pt; color: {t['fg']};")
+        title.setStyleSheet(f"font-weight: 700; font-size: 12.5pt; color: {t['fg']};"
+                            " padding: 0 2px 2px 2px;")
         layout.addWidget(title)
 
         top = QHBoxLayout()
@@ -630,6 +689,8 @@ class CommandReferenceDialog(QDialog):
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search commands, arguments, descriptions...")
         self._search.setClearButtonEnabled(True)
+        self._search.setMinimumWidth(140)
+        self._search.setAccessibleName("Search commands")
         self._search.textChanged.connect(self._refilter)
         top.addWidget(self._search, 1)
         layout.addLayout(top)
@@ -640,20 +701,49 @@ class CommandReferenceDialog(QDialog):
         body.setChildrenCollapsible(False)
         body.setHandleWidth(8)
         self._list = QListWidget()
-        self._list.setMinimumWidth(150)
+        self._list.setMinimumWidth(170)
+        self._list.setMaximumWidth(340)
+        self._list.setItemDelegate(_EntryDelegate(t, self._list))
+        self._list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list.setMouseTracking(True)
         self._list.currentRowChanged.connect(self._show_row)
         body.addWidget(self._list)
         self._detail = QTextBrowser()
         self._detail.setOpenLinks(False)
         self._detail.setMinimumWidth(330)
+        self._detail.setTabChangesFocus(True)
+        # breathing room between the text and the pane's rounded border
+        self._detail.document().setDocumentMargin(18)
+        self._detail.viewport().setMouseTracking(True)
+        self._detail.viewport().installEventFilter(self)
         body.addWidget(self._detail)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setSizes([220, 740])
+        body.setSizes([250, 730])
         layout.addWidget(body, 1)
         self.setMinimumSize(560, 400)
 
+        # hover-revealed copy buttons, overlaid on the syntax / example boxes
+        self._box_order = []
+        self._box_pos = {}
+        self._copy_btns = {}
+        for what, tip in (("syntax", "Copy syntax"), ("example", "Copy example")):
+            b = HoverCopyButton(t, tip, self._detail.viewport())
+            b.clicked.connect(lambda checked=False, w=what: self.copy(w))
+            b.focusChanged.connect(self._update_hover)
+            b.installEventFilter(self)
+            b.hide()
+            self._copy_btns[what] = b
+        self._detail.verticalScrollBar().valueChanged.connect(self._place_copy_buttons)
+        self._detail.document().documentLayout().documentSizeChanged.connect(
+            lambda *_: self._place_copy_buttons())
+        QWidget.setTabOrder(self._list, self._detail)
+        QWidget.setTabOrder(self._detail, self._copy_btns["syntax"])
+        QWidget.setTabOrder(self._copy_btns["syntax"], self._copy_btns["example"])
+
         row = QHBoxLayout()
+        row.setSpacing(10)
         self._copy_syntax = QPushButton("Copy syntax")
         self._copy_example = QPushButton("Copy example")
         for b, what in ((self._copy_syntax, "syntax"), (self._copy_example, "example")):
@@ -661,13 +751,15 @@ class CommandReferenceDialog(QDialog):
             b.clicked.connect(lambda checked=False, w=what: self.copy(w))
             row.addWidget(b)
         self._status = QLabel("")
-        self._status.setStyleSheet(f"color: {t['fg_dim']};")
+        self._status.setStyleSheet(f"color: {t['fg_dim']}; padding: 0 6px;")
         row.addWidget(self._status, 1)
         close_btn = QPushButton("Close")
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.clicked.connect(self.accept)
         row.addWidget(close_btn)
         layout.addLayout(row)
+        QWidget.setTabOrder(self._copy_btns["example"], self._copy_syntax)
+        QWidget.setTabOrder(self._copy_syntax, self._copy_example)
 
         self.set_category(self._kind)
 
@@ -707,27 +799,132 @@ class CommandReferenceDialog(QDialog):
         self._copy_syntax.setEnabled(e is not None)
         self._copy_example.setEnabled(e is not None)
         self._status.setText("")
+        self._box_order = []
+        self._box_pos = {}
         self._detail.setHtml(self._render(e) if e else
                              f"<p style='color:{self._t['fg_dim']}'>No commands match.</p>")
+        self._detail.verticalScrollBar().setValue(0)
+        self._map_boxes()
+        self._place_copy_buttons()
+
+    # -- hover copy buttons --------------------------------------------------
+    def _map_boxes(self):
+        """Record where the syntax/example code boxes live in the document as
+        plain text positions (QTextFrame objects are destroyed on every
+        setHtml, so none are kept). _render emits code boxes and the arguments
+        table as top-level tables in a known order (self._box_order); frame i
+        of the document is entry i."""
+        frames = self._detail.document().rootFrame().childFrames()
+        self._box_pos = {}
+        for kind, frame in zip(self._box_order, frames):
+            if kind in self._copy_btns:
+                self._box_pos[kind] = (frame.firstPosition(), frame.lastPosition())
+
+    # one-cell code table: 1px border + 11px cell padding around the text
+    _BOX_INSET = 12
+
+    def box_rect(self, what):
+        """Viewport-coordinate rectangle of a code box, or None. Derived from
+        the text cursor rects (true on-screen geometry, scroll included);
+        QTextDocumentLayout.frameBoundingRect is offset for HTML tables."""
+        pos = self._box_pos.get(what)
+        if pos is None:
+            return None
+        doc = self._detail.document()
+        cur = self._detail.textCursor()
+        cur.setPosition(pos[0])
+        top = self._detail.cursorRect(cur).top() - self._BOX_INSET
+        cur.setPosition(pos[1])
+        bottom = self._detail.cursorRect(cur).bottom() + 2 + self._BOX_INSET
+        margin = doc.documentMargin()
+        width = doc.documentLayout().frameBoundingRect(doc.rootFrame()).width()
+        return QRectF(margin, top, width - 2 * margin + 1, bottom - top)
+
+    def _place_copy_buttons(self, *_):
+        vp = self._detail.viewport()
+        for what, b in self._copy_btns.items():
+            r = self.box_rect(what)
+            if r is None or not r.intersects(QRectF(vp.rect())):
+                b.hide()
+                continue
+            # pinned to the box's top-right corner; clamped so it stays inside
+            # the box when the box is partly scrolled off the top
+            x = int(r.right()) - b.width() - 8
+            y = int(max(r.top() + 8, min(8, r.bottom() - b.height() - 8)))
+            b.move(x, y)
+            b.show()
+            b.raise_()
+        self._update_hover()
+
+    def _update_hover(self, pos=None):
+        """Reveal a box's copy button while the pointer is over the box (or
+        the button) or the button has keyboard focus."""
+        if not isinstance(pos, QPoint):
+            pos = self._detail.viewport().mapFromGlobal(QCursor.pos())
+        inside = self._detail.viewport().rect().contains(pos)
+        for what, b in self._copy_btns.items():
+            r = self.box_rect(what)
+            over = bool(inside and r is not None and r.contains(pos.x(), pos.y()))
+            b.set_revealed(over or b.hasFocus())
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if obj is self._detail.viewport():
+            if t == QEvent.MouseMove:
+                self._update_hover(ev.position().toPoint())
+            elif t == QEvent.Leave:
+                self._update_hover()
+            elif t == QEvent.Resize:
+                QTimer.singleShot(0, self._place_copy_buttons)
+        elif t == QEvent.Leave and obj in self._copy_btns.values():
+            self._update_hover()
+        return super().eventFilter(obj, ev)
+
+    @staticmethod
+    def _set_clipboard(text):
+        """Put text on the clipboard and verify it landed (Windows can refuse
+        the first attempt if another app briefly holds the clipboard)."""
+        cb = QApplication.clipboard()
+        for _ in range(3):
+            cb.setText(text)
+            if cb.text() == text:
+                return True
+            QApplication.processEvents()
+        return False
 
     def copy(self, what="syntax"):
         e = self.current_entry()
         if e is None:
             return False
-        QApplication.clipboard().setText(reference.copy_text(e, what))
+        if not self._set_clipboard(reference.copy_text(e, what)):
+            self._status.setText(f"Couldn't copy {what} - clipboard is busy.")
+            return False
         self._status.setText(f"Copied {what}.")
+        b = self._copy_btns.get(what)
+        if b is not None:
+            b.confirm()
         return True
 
     # -- rendering -----------------------------------------------------------
     def _render(self, e):
         t = self._t
         esc = html.escape
-        mono = f"font-family:{FONT_MONO}; background:{t['bg_panel']};"
-        def pre(text):
-            return (f"<pre style='{mono} padding:8px; white-space:pre-wrap;'>"
-                    f"{esc(text)}</pre>")
+        self._box_order = []
+        def pre(text, kind="output"):
+            # a one-cell table = a real padded, bordered box (a bare <pre>
+            # background hugs the text and clips against the pane edge)
+            self._box_order.append(kind)
+            return (f"<table width='100%' cellspacing='0' cellpadding='11' border='1'"
+                    f" style='border-color:{t['border']}; border-style:solid;'>"
+                    f"<tr><td bgcolor='{t['bg_panel']}' style='padding-right:44px;'>"
+                    f"<pre style='font-family:{FONT_MONO}; margin:0; white-space:pre-wrap;"
+                    f" color:{t['fg']};'>{esc(text)}</pre></td></tr></table>")
         def h(text):
-            return f"<h4 style='color:{t['accent']}; margin:14px 0 4px 0;'>{text}</h4>"
+            return f"<h4 style='color:{t['accent']}; margin:18px 0 6px 0;'>{text}</h4>"
+        def mark_args(markup):
+            if e["args"]:
+                self._box_order.append("args")   # keeps frame order aligned
+            return markup
         rows = []
         for a in e["args"]:
             default = "-" if a["default"] is None else str(a["default"])
@@ -742,11 +939,11 @@ class CommandReferenceDialog(QDialog):
             desc = " ".join([a["description"]] + [f"[{x}]" for x in extra]).strip()
             ident = a.get("form") or a["name"]
             rows.append("<tr>" + "".join(
-                f"<td style='padding:3px 8px; border-bottom:1px solid {t['border']};'>{c}</td>"
+                f"<td style='padding:5px 10px; border-bottom:1px solid {t['border']};'>{c}</td>"
                 for c in (f"<code>{esc(ident)}</code>", esc(kind), esc(default), req, esc(desc))
             ) + "</tr>")
         table = ("<table cellspacing='0' width='100%'><tr>" + "".join(
-            f"<th align='left' style='padding:3px 8px; color:{t['fg_dim']};'>{c}</th>"
+            f"<th align='left' style='padding:5px 10px; color:{t['fg_dim']};'>{c}</th>"
             for c in ("Argument", "Type", "Default", "Status", "Description"))
             + "</tr>" + "".join(rows) + "</table>") if rows else "<p>No arguments.</p>"
         notes = "".join(f"<li>{esc(n)}</li>" for n in e["notes"])
@@ -754,9 +951,9 @@ class CommandReferenceDialog(QDialog):
                 f"<p><code>{esc(e['identifier'])}</code> &nbsp;|&nbsp; "
                 f"<b>{esc(e['permission'])}</b> - {esc(e['permission_note'])}</p>"
                 f"<p>{esc(e['summary'])}</p>"
-                + h("Syntax") + pre(e["syntax"])
-                + h("Arguments") + table
-                + h("Example") + pre(e["example"])
+                + h("Syntax") + pre(e["syntax"], "syntax")
+                + h("Arguments") + mark_args(table)
+                + h("Example") + pre(e["example"], "example")
                 + h("Expected output") + pre(e["output"])
                 + h("Notes") + f"<ul>{notes}</ul>")
 

@@ -1,0 +1,12 @@
+{
+  "id": "build-release",
+  "name": "Build CodeLens binaries and launch",
+  "description": "Rebuild exes from specs/*.spec + CodeLensSetup.nsi when sources changed, then launch the app. Runs detached (write tier); input {action:'status'} reads the log.",
+  "entry": "scripts/build_release.py",
+  "input_schema": {"action": {"type": "string"}, "force": {"type": "boolean"}, "no_launch": {"type": "boolean"}, "no_installer": {"type": "boolean"}},
+  "timeout_s": 30,
+  "risk": 1,
+  "version": "1.0.0",
+  "status": "active",
+  "cache": false
+}

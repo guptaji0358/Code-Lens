@@ -1,13 +1,11 @@
 __pycache__
 Installer
 out
-*.spec
 build/
 dist/
 dist_tmp/
 build_tmp/
 CLAUDE.md
-CodeLens.spec
 CodeLensSetup.nsi
 DESCRIPTION.txt
 recent_folders.json
