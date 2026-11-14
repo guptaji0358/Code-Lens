@@ -217,5 +217,208 @@ class DialogTests(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+@unittest.skipUnless(HAVE_QT, "PySide6 not installed")
+class PolishTests(unittest.TestCase):
+    """Spacing/layout + hover copy button behaviour of the dialog."""
+
+    SIZES = ((560, 400), (980, 600), (1400, 850))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        from theme import THEMES
+        cls.themes = THEMES
+
+    def make(self, theme="dark", size=(980, 600), kind="mcp"):
+        from dialogs import CommandReferenceDialog
+        d = CommandReferenceDialog(None, self.themes[theme])
+        d.set_category(kind)
+        d.show()
+        d.resize(*size)
+        self.addCleanup(d.close)
+        self.settle()
+        return d
+
+    def settle(self, ms=30):
+        from PySide6.QtTest import QTest
+        QTest.qWait(ms)
+        self.app.processEvents()
+
+    @staticmethod
+    def centre(d, what):
+        from PySide6.QtCore import QPoint
+        r = d.box_rect(what)
+        return QPoint(int(r.center().x()), int(r.center().y()))
+
+    # -- layout ----------------------------------------------------------------
+    def test_layout_all_themes_sizes_and_tabs(self):
+        for theme in self.themes:
+            for kind in ("mcp", "cli"):
+                for size in self.SIZES:
+                    d = self.make(theme, size, kind)
+                    tag = (theme, kind, size)
+                    self.assertGreaterEqual(d.width(), 560, tag)
+                    self.assertGreaterEqual(d.height(), 400, tag)
+                    self.assertGreaterEqual(d._detail.viewport().width(), 280, tag)
+                    self.assertGreaterEqual(d._list.width(), 170, tag)
+                    self.assertLessEqual(d._list.width(), 340, tag)
+                    for w in (d._search, d._list, d._detail, d._copy_syntax):
+                        self.assertTrue(d.rect().contains(w.mapTo(d, w.rect().topLeft())), tag)
+                        self.assertTrue(d.rect().contains(w.mapTo(d, w.rect().bottomRight())), tag)
+
+    def test_detail_text_keeps_margin_from_pane_border(self):
+        d = self.make()
+        self.assertGreaterEqual(d._detail.document().documentMargin(), 12)
+        vp_w = d._detail.viewport().width()
+        for what in ("syntax", "example"):
+            r = d.box_rect(what)
+            self.assertGreaterEqual(r.left(), 12, what)
+            self.assertLessEqual(r.right(), vp_w - 12 + 1, what)
+
+    def test_list_rows_have_padding_for_two_lines(self):
+        from PySide6.QtWidgets import QStyleOptionViewItem
+        d = self.make()
+        opt = QStyleOptionViewItem()
+        opt.font = d._list.font()
+        opt.rect.setWidth(200)
+        h = d._list.itemDelegate().sizeHint(opt, d._list.model().index(0, 0)).height()
+        self.assertGreaterEqual(h, 2 * d._list.fontMetrics().height() + 2 * 8)
+
+    def test_every_entry_has_boxes_inside_viewport(self):
+        d = self.make(size=(560, 400))
+        for kind in ("mcp", "cli"):
+            d.set_category(kind)
+            for row in range(len(d.visible_entries())):
+                d._list.setCurrentRow(row)
+                self.settle(10)
+                for what in ("syntax", "example"):
+                    r = d.box_rect(what)
+                    self.assertIsNotNone(r, (kind, row, what))
+                    self.assertGreater(r.height(), 20)
+                    self.assertLessEqual(r.right(), d._detail.viewport().width())
+
+    # -- hover copy button -----------------------------------------------------
+    def test_button_hidden_until_hover_then_hides_again(self):
+        from PySide6.QtCore import QPoint, Qt
+        d = self.make()
+        b = d._copy_btns["example"]
+        self.assertEqual(b.reveal, 0.0)
+        self.assertFalse(b.is_revealed())
+        d._update_hover(self.centre(d, "example"))
+        self.settle(400)
+        self.assertTrue(b.is_revealed())
+        self.assertEqual(b.reveal, 1.0)
+        self.assertFalse(b.testAttribute(Qt.WA_TransparentForMouseEvents))
+        self.assertFalse(d._copy_btns["syntax"].is_revealed())   # other box untouched
+        d._update_hover(QPoint(-5, -5))
+        self.settle(400)
+        self.assertEqual(b.reveal, 0.0)
+        self.assertTrue(b.testAttribute(Qt.WA_TransparentForMouseEvents))
+
+    def test_reveal_is_animated_not_instant(self):
+        d = self.make()
+        b = d._copy_btns["syntax"]
+        d._update_hover(self.centre(d, "syntax"))
+        self.assertLess(b.reveal, 1.0)          # not snapped open
+        self.settle(400)
+        self.assertEqual(b.reveal, 1.0)
+
+    def test_button_sits_inside_its_box(self):
+        from PySide6.QtCore import QRectF
+        for size in self.SIZES:
+            d = self.make(size=size)
+            vp = QRectF(d._detail.viewport().rect())
+            shown = 0
+            for what, b in d._copy_btns.items():
+                r = d.box_rect(what)
+                # visible exactly when its box is (even partly) on screen
+                self.assertEqual(b.isVisible(), r.intersects(vp), (size, what))
+                if not b.isVisible():
+                    continue
+                shown += 1
+                g = b.geometry()
+                self.assertGreaterEqual(g.left(), r.left(), (size, what))
+                self.assertLessEqual(g.right(), r.right(), (size, what))
+                self.assertGreaterEqual(g.top(), r.top(), (size, what))
+                self.assertLessEqual(g.bottom(), r.bottom(), (size, what))
+            if size[0] >= 980:   # at the minimum size the boxes may start below the fold
+                self.assertGreater(shown, 0, size)
+
+    def test_click_copies_matching_content_and_flashes_then_returns(self):
+        d = self.make()
+        d._search.setText("read_file")
+        self.settle()
+        e = d.current_entry()
+        for what in ("syntax", "example"):
+            QApplication.clipboard().clear()
+            d._update_hover(self.centre(d, what))
+            self.settle(300)
+            b = d._copy_btns[what]
+            b.click()
+            self.assertEqual(QApplication.clipboard().text(), e[what])
+            self.assertTrue(b.is_confirming())
+            self.settle(300)
+            self.assertGreater(b.flash, 0.9)          # confirmation visible
+            self.settle(1900)
+            self.assertEqual(b.flash, 0.0)             # eased back
+            self.assertFalse(b.is_confirming())
+
+    def test_keyboard_focus_reveals_and_space_or_enter_copies(self):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        d = self.make()
+        d.activateWindow()
+        b = d._copy_btns["syntax"]
+        self.assertEqual(b.focusPolicy(), Qt.StrongFocus)
+        b.setFocus()
+        self.settle(300)
+        if not b.hasFocus():
+            self.skipTest("platform did not grant focus to the offscreen window")
+        self.assertTrue(b.is_revealed())
+        d._update_hover(QPoint(-5, -5))
+        self.settle(300)
+        self.assertTrue(b.is_revealed())               # focus keeps it visible
+        for key in (Qt.Key_Space, Qt.Key_Return):
+            QApplication.clipboard().clear()
+            QTest.keyClick(b, key)
+            self.assertEqual(QApplication.clipboard().text(), d.current_entry()["syntax"])
+
+    def test_tooltip_and_accessible_names(self):
+        d = self.make()
+        self.assertEqual(d._copy_btns["syntax"].toolTip(), "Copy syntax")
+        self.assertEqual(d._copy_btns["example"].toolTip(), "Copy example")
+        for b in d._copy_btns.values():
+            self.assertEqual(b.accessibleName(), b.toolTip())
+
+    def test_failed_clipboard_reports_and_does_not_confirm(self):
+        d = self.make()
+        d._set_clipboard = lambda text: False
+        self.assertFalse(d.copy("syntax"))
+        self.assertIn("Couldn", d._status.text())
+        self.assertFalse(d._copy_btns["syntax"].is_confirming())
+
+    def test_buttons_follow_scroll_and_hide_when_offscreen(self):
+        from PySide6.QtCore import QRectF
+        d = self.make(size=(560, 400))
+        sb = d._detail.verticalScrollBar()
+        vp = QRectF(d._detail.viewport().rect())
+        seen = set()
+        for v in range(0, sb.maximum() + 1, 25):
+            sb.setValue(v)
+            self.settle(5)
+            for what, b in d._copy_btns.items():
+                on = d.box_rect(what).intersects(vp)
+                self.assertEqual(b.isVisible(), on, (v, what))
+                if on:
+                    seen.add(what)
+        self.assertEqual(seen, {"syntax", "example"})   # both reachable by scrolling
+
+    def test_footer_copy_buttons_still_work(self):
+        d = self.make()
+        d._copy_example.click()
+        self.assertEqual(QApplication.clipboard().text(), d.current_entry()["example"])
+        self.assertEqual(d._status.text(), "Copied example.")
+
+
 if __name__ == "__main__":
     unittest.main()
