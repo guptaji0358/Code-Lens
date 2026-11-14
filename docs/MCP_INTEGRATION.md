@@ -8,7 +8,22 @@ unchanged and does not need MCP.
 - Transport: **stdio** only (no HTTP, no authentication)
 - MCP SDK: official `mcp` Python SDK **2.3.x** (`mcp>=2.3,<3`); protocol versions served: the
   SDK's current version (2026-07-28) and the earlier handshake versions (2024-11-05 through
-  2025-11-25), negotiated per client
+  2025-11-25), negotiated per client.
+  - **`initialize` negotiation — covered by automated tests** (`tests/test_mcp_stdio.py`): the
+    handshake negotiates up to **2025-11-25** (2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05
+    are echoed back; an unknown version gets a supported one).
+  - **`server/discover` and 2026-07-28 — verified by a separate MCP SDK 2.3.0 scratchpad probe,
+    not covered by the current automated regression tests.** 2026-07-28 is available through
+    `server/discover` with modern SDK negotiation modes; a client that only sends `initialize`
+    stays on the earlier versions. Treat this part as a manual finding until a test covers it.
+- Three separate namespaces — do not mix them:
+  1. **MCP launcher process exit codes** (`python -m codelens_agent.mcp_server`): `0` ok/clean
+     shutdown, `2` usage error, `3` MCP SDK not installed.
+  2. **CLI operation exit codes** (`python -m codelens_agent ...`, see
+     [AI_AGENT_INTEGRATION.md](AI_AGENT_INTEGRATION.md)): `0`–`5`, where `2` = invalid argument/request/cursor
+     and `3` = path error. These are unrelated to the launcher's `2`/`3`.
+  3. **MCP tool errors**: no exit code; a failed operation is an `isError: true` result carrying
+     the envelope's `errors[0].code`.
 - Code-Lens tool catalogue version: **1** · interface version: **1** · schema version: **1.0**
 - Read-only. No tool writes, executes code, or accepts a root/path outside the permitted roots.
 
