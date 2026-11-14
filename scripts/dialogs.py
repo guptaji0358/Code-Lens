@@ -11,16 +11,18 @@ import os
 import re
 
 from PySide6.QtCore import (
-    Qt, QTimer, QRect, QPoint, QSize, QEasingCurve, QPropertyAnimation,
+    Qt, QTimer, QRectF, QRect, QPoint, QSize, QEasingCurve, QPropertyAnimation,
     QParallelAnimationGroup, Signal,
 )
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut, QFont, QColor
+from PySide6.QtGui import (
+    QIcon, QKeySequence, QShortcut, QFont, QColor, QPainter, QFontMetrics,
+)
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit, QButtonGroup,
     QStackedWidget, QKeySequenceEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QGraphicsOpacityEffect, QListWidget, QListWidgetItem, QTextBrowser,
-    QSplitter,
+    QSplitter, QStyledItemDelegate, QStyle,
 )
 
 import CodeLensCLI as core
@@ -571,6 +573,62 @@ class FileDetailsDialog(QDialog):
         dlg.exec()
 
 
+class _EntryDelegate(QStyledItemDelegate):
+    """Two-line entry row for the command list: bold label over a dim
+    monospace identifier, with real horizontal/vertical padding and a rounded
+    selection/hover chip (the stock item text hugged the list border)."""
+
+    PAD_X, PAD_Y, GAP = 14, 9, 3
+
+    def __init__(self, t, parent=None):
+        super().__init__(parent)
+        self._t = t
+
+    def _fonts(self, base):
+        bold = QFont(base)
+        bold.setBold(True)
+        mono = QFont(FONT_MONO.split(",")[0].strip(" '\""))
+        mono.setPointSizeF(max(base.pointSizeF() - 0.5, 7))
+        return bold, mono
+
+    def sizeHint(self, option, index):
+        bold, mono = self._fonts(option.font)
+        h = (QFontMetrics(bold).height() + QFontMetrics(mono).height()
+             + self.GAP + 2 * self.PAD_Y + 4)
+        return QSize(option.rect.width(), h)
+
+    def paint(self, painter, option, index):
+        t = self._t
+        label, _, ident = str(index.data(Qt.DisplayRole)).partition("\n")
+        sel = bool(option.state & QStyle.State_Selected)
+        hov = bool(option.state & QStyle.State_MouseOver)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        chip = QRectF(option.rect).adjusted(6, 2, -6, -2)
+        if sel or hov:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(t["accent"]) if sel else QColor(t["bg_card_hover"]))
+            painter.drawRoundedRect(chip, 8, 8)
+        fg = QColor(contrast_fg(t["accent"])) if sel else QColor(t["fg"])
+        dim = QColor(contrast_fg(t["accent"])) if sel else QColor(t["fg_dim"])
+        if sel:
+            dim.setAlphaF(0.8)
+        bold, mono = self._fonts(option.font)
+        fb, fm = QFontMetrics(bold), QFontMetrics(mono)
+        x = int(chip.left()) + self.PAD_X - 6
+        w = int(chip.width()) - 2 * (self.PAD_X - 6) - 6
+        y = int(chip.top()) + self.PAD_Y + 2
+        painter.setFont(bold)
+        painter.setPen(fg)
+        painter.drawText(x, y, w, fb.height(), Qt.AlignLeft | Qt.AlignVCenter,
+                         fb.elidedText(label, Qt.ElideRight, w))
+        painter.setFont(mono)
+        painter.setPen(dim)
+        painter.drawText(x, y + fb.height() + self.GAP, w, fm.height(),
+                         Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(ident, Qt.ElideRight, w))
+        painter.restore()
+
+
 class CommandReferenceDialog(QDialog):
     """AI Command Reference: the read-only agent interface (MCP tools and CLI
     commands) browsable in the GUI. All content comes from
@@ -595,9 +653,9 @@ class CommandReferenceDialog(QDialog):
             QListWidget, QTextBrowser {{ background: {t['bg_card']}; color: {t['fg']};
                 border: 1px solid {t['border']}; border-radius: 8px; }}
             QSplitter::handle {{ background: transparent; }}
-            QListWidget::item {{ padding: 7px 8px; }}
-            QListWidget::item:selected {{ background: {t['accent']};
-                color: {contrast_fg(t['accent'])}; }}
+            QListWidget {{ padding: 4px 0; outline: 0; }}
+            QToolTip {{ background: {t['bg_card']}; color: {t['fg']};
+                border: 1px solid {t['border']}; padding: 4px 8px; }}
             QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
                 border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
             QPushButton:disabled {{ background: {t['bg_card']}; color: {t['fg_dim']}; }}
@@ -609,10 +667,11 @@ class CommandReferenceDialog(QDialog):
                  f" color: {contrast_fg(t['accent'])}; border-color: {t['accent']}; }}")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
         title = QLabel("AI Command Reference")
-        title.setStyleSheet(f"font-weight: 700; font-size: 12.5pt; color: {t['fg']};")
+        title.setStyleSheet(f"font-weight: 700; font-size: 12.5pt; color: {t['fg']};"
+                            " padding: 0 2px 2px 2px;")
         layout.addWidget(title)
 
         top = QHBoxLayout()
@@ -630,6 +689,8 @@ class CommandReferenceDialog(QDialog):
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search commands, arguments, descriptions...")
         self._search.setClearButtonEnabled(True)
+        self._search.setMinimumWidth(140)
+        self._search.setAccessibleName("Search commands")
         self._search.textChanged.connect(self._refilter)
         top.addWidget(self._search, 1)
         layout.addLayout(top)
@@ -640,7 +701,12 @@ class CommandReferenceDialog(QDialog):
         body.setChildrenCollapsible(False)
         body.setHandleWidth(8)
         self._list = QListWidget()
-        self._list.setMinimumWidth(150)
+        self._list.setMinimumWidth(170)
+        self._list.setMaximumWidth(340)
+        self._list.setItemDelegate(_EntryDelegate(t, self._list))
+        self._list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._list.setMouseTracking(True)
         self._list.currentRowChanged.connect(self._show_row)
         body.addWidget(self._list)
         self._detail = QTextBrowser()
@@ -649,11 +715,12 @@ class CommandReferenceDialog(QDialog):
         body.addWidget(self._detail)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
-        body.setSizes([220, 740])
+        body.setSizes([250, 730])
         layout.addWidget(body, 1)
         self.setMinimumSize(560, 400)
 
         row = QHBoxLayout()
+        row.setSpacing(10)
         self._copy_syntax = QPushButton("Copy syntax")
         self._copy_example = QPushButton("Copy example")
         for b, what in ((self._copy_syntax, "syntax"), (self._copy_example, "example")):
@@ -661,7 +728,7 @@ class CommandReferenceDialog(QDialog):
             b.clicked.connect(lambda checked=False, w=what: self.copy(w))
             row.addWidget(b)
         self._status = QLabel("")
-        self._status.setStyleSheet(f"color: {t['fg_dim']};")
+        self._status.setStyleSheet(f"color: {t['fg_dim']}; padding: 0 6px;")
         row.addWidget(self._status, 1)
         close_btn = QPushButton("Close")
         close_btn.setCursor(Qt.PointingHandCursor)
