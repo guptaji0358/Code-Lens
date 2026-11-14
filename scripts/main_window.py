@@ -154,6 +154,8 @@ class FinderWindow(QMainWindow):
         self._refresh_tooltips()
         self._apply_theme(animate=False)
         self._refresh_file_list()
+        self._fit_search_card()
+        self._update_toolbar_density()
         self._set_status("Ready - press Alt+A or click Add to load a file.", "ok")
 
         # Pre-warm the installed-editors cache in the background so the
@@ -200,30 +202,12 @@ class FinderWindow(QMainWindow):
         root = QWidget(self.backdrop)
         root.setObjectName("root")
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(14, 12, 14, 10)
-        outer.setSpacing(8)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(6)
 
         def relayout_root():
             root.setGeometry(self.backdrop.rect())
         self.backdrop.resizeEvent = lambda e: relayout_root()
-
-        # ---- brand row ---------------------------------------------------
-        brand_row = QHBoxLayout()
-        brand_icon = QLabel()
-        brand_icon.setObjectName("brandIcon")
-        self._brand_icon_lbl = brand_icon
-        brand_row.addWidget(brand_icon)
-        brand_col = QVBoxLayout()
-        brand_col.setSpacing(0)
-        name_lbl = QLabel(APP_NAME)
-        name_lbl.setObjectName("brand")
-        tag_lbl = QLabel(APP_TAGLINE)
-        tag_lbl.setObjectName("brandTag")
-        brand_col.addWidget(name_lbl)
-        brand_col.addWidget(tag_lbl)
-        brand_row.addLayout(brand_col)
-        brand_row.addStretch()
-        outer.addLayout(brand_row)
 
         # ---- toolbar ---------------------------------------------------
         toolbar = QHBoxLayout()
@@ -241,12 +225,19 @@ class FinderWindow(QMainWindow):
                                          tooltip="Add file(s) to the working set")
         self.btn_remove = make_tool_button("Remove", "remove", self.on_remove, "danger",
                                             tooltip="Remove the selected file(s) from the working set")
+        # Split button: the main click is New Set; the dropdown also holds
+        # "Reset search state" (what the separate Reset button used to do).
         self.btn_change = make_tool_button("New Set", "change", self.on_change,
                                             tooltip="Clear everything and start a fresh file set")
+        self.btn_change.setPopupMode(QToolButton.MenuButtonPopup)
+        self.change_menu = style_menu(QMenu(self))
+        self.act_new_set = self.change_menu.addAction("New file set…")
+        self.act_new_set.triggered.connect(self.on_change)
+        self.act_reset_search = self.change_menu.addAction("Reset search state")
+        self.act_reset_search.triggered.connect(self.on_reset_search)
+        self.btn_change.setMenu(self.change_menu)
         self.btn_reload = make_tool_button("Reload", "reload", self.on_reload,
                                             tooltip="Reload every loaded file from disk")
-        self.btn_reset = make_tool_button("Reset", "reset", self.on_reset, "warn",
-                                           tooltip="Reset search state, or clear everything")
         self.btn_clear = make_tool_button("Clear Results", "clear", self.on_clear_results,
                                            tooltip="Clear the results pane")
         self.btn_details = make_tool_button("Details", "details", self.on_show_details,
@@ -256,7 +247,7 @@ class FinderWindow(QMainWindow):
         self.btn_commands = make_tool_button("Commands", "info", self.on_show_commands,
                                               tooltip="AI Command Reference: MCP tools and CLI commands")
         for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
-                  self.btn_reset, self.btn_clear, self.btn_details, self.btn_commands):
+                  self.btn_clear, self.btn_details, self.btn_commands):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
         toolbar.addStretch()
@@ -290,7 +281,7 @@ class FinderWindow(QMainWindow):
 
         self.splitter = QSplitter(Qt.Horizontal)
         splitter = self.splitter
-        splitter.setHandleWidth(8)
+        splitter.setHandleWidth(6)
         splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         body_outer.addWidget(splitter)
 
@@ -299,7 +290,7 @@ class FinderWindow(QMainWindow):
         self.left_panel = left
         left.setObjectName("panel")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setContentsMargins(10, 10, 10, 10)
 
         header_row = QHBoxLayout()
         lbl = QLabel("LOADED FILES")
@@ -377,14 +368,15 @@ class FinderWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         right_splitter = QSplitter(Qt.Vertical)
-        right_splitter.setHandleWidth(8)
+        right_splitter.setHandleWidth(6)
         right_splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         right_layout.addWidget(right_splitter)
 
         search_card = QFrame()
+        self.search_card = search_card
         search_card.setObjectName("card")
         sc_layout = QVBoxLayout(search_card)
-        sc_layout.setContentsMargins(16, 14, 16, 14)
+        sc_layout.setContentsMargins(12, 10, 12, 10)
         self._glass_cards.append(search_card)
 
         mode_row = QHBoxLayout()
@@ -452,7 +444,7 @@ class FinderWindow(QMainWindow):
         results_card = QFrame()
         results_card.setObjectName("card")
         rc_layout = QVBoxLayout(results_card)
-        rc_layout.setContentsMargins(16, 12, 16, 12)
+        rc_layout.setContentsMargins(12, 8, 12, 10)
         self._glass_cards.append(results_card)
 
         rc_header = QHBoxLayout()
@@ -494,7 +486,7 @@ class FinderWindow(QMainWindow):
         right_splitter.addWidget(results_card)
         right_splitter.setStretchFactor(0, 0)
         right_splitter.setStretchFactor(1, 1)
-        right_splitter.setSizes([180, 560])
+        self.right_splitter = right_splitter
 
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
@@ -517,6 +509,40 @@ class FinderWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._busy_overlay.setGeometry(self.rect())
+        self._update_toolbar_density()
+
+    def _fit_search_card(self):
+        """Give the search card exactly the height its content needs (the
+        results pane gets all the rest) instead of a fixed pixel size that
+        left a band of empty glass above/below the input."""
+        card = self.search_card
+        card.layout().activate()
+        sizes = self.right_splitter.sizes()
+        total = sum(sizes) or self.right_splitter.height()
+        need = card.sizeHint().height()
+        if total > need:
+            self.right_splitter.setSizes([need, total - need])
+
+    def _update_toolbar_density(self):
+        """Labelled toolbar buttons when they fit, icon-only (tooltips carry
+        the names) when the window is too narrow - instead of Qt eliding every
+        label down to '...'."""
+        labelled = (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent,
+                    self.btn_reload, self.btn_clear, self.btn_details,
+                    self.btn_commands, self.btn_settings)
+        if not hasattr(self, "_toolbar_full_width"):
+            for b in labelled:
+                b._label_text = b.text()
+                b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            self._toolbar_full_width = (sum(b.sizeHint().width() for b in labelled)
+                                        + self.btn_explorer.width() + 6 * len(labelled) + 24)
+            self._toolbar_icon_only = False
+        avail = self.centralWidget().width() - 24
+        want_icons = avail < self._toolbar_full_width
+        if want_icons != self._toolbar_icon_only:
+            self._toolbar_icon_only = want_icons
+            for b in labelled:
+                b.setToolButtonStyle(Qt.ToolButtonIconOnly if want_icons else Qt.ToolButtonTextBesideIcon)
 
     # ---------------------------------------------------------- theming --
     def _effective_theme(self):
@@ -545,6 +571,8 @@ class FinderWindow(QMainWindow):
                 else:
                     normal = icon(b._icon_name, self.theme)
                 b.set_icons(normal, hover_icon(b._icon_name))
+            self.act_new_set.setIcon(icon("change", self.theme))
+            self.act_reset_search.setIcon(icon("reset", self.theme))
             for rb in self.mode_buttons.values():
                 if rb._icon_name in ACCENT_ICON_NAMES and self.custom_accent:
                     normal = tinted_icon(rb._icon_name, self.theme, self.custom_accent)
@@ -566,7 +594,6 @@ class FinderWindow(QMainWindow):
             # look instead comes from the translucent background plus
             # the soft highlight border in build_stylesheet().
 
-            self._brand_icon_lbl.setPixmap(QIcon(APP_ICON_PATH).pixmap(34, 34))
             try:
                 self.setWindowIcon(QIcon(APP_ICON_PATH))
             except Exception:
@@ -647,7 +674,7 @@ class FinderWindow(QMainWindow):
             "search": self.on_search,
             "add": self.on_add,
             "reload": self.on_reload,
-            "reset": self.on_reset,
+            "reset": self.on_reset_search,
             "clear_results": self.on_clear_results,
             "case_sensitive": lambda: self.case_chk.setChecked(not self.case_chk.isChecked()),
         }
@@ -709,7 +736,11 @@ class FinderWindow(QMainWindow):
         keys = self.shortcut_keys
         self.btn_add.setToolTip(f"Add file(s) to the working set  ({keys['add']})")
         self.btn_reload.setToolTip(f"Reload every loaded file from disk  ({keys['reload']})")
-        self.btn_reset.setToolTip(f"Reset search state, or clear everything  ({keys['reset']})")
+        self.btn_change.setToolTip("Clear everything and start a fresh file set\n"
+                                   "Use the arrow for more: reset search state only  "
+                                   f"({keys['reset']})")
+        self.act_reset_search.setText("Reset search state")
+        self.act_reset_search.setToolTip(f"Clear the search box and results, keep loaded files  ({keys['reset']})")
         self.btn_clear.setToolTip(f"Clear the results pane  ({keys['clear_results']})")
         self.search_btn.setToolTip(f"Run the search  ({keys['search']})")
         self.case_chk.setToolTip(f"Toggle case-sensitive matching  ({keys['case_sensitive']})")
@@ -1707,31 +1738,25 @@ class FinderWindow(QMainWindow):
 
         self._run_busy(work, done, "Reloading file(s) from disk...")
 
-    def on_reset(self):
-        if not self._confirm(
+    def on_reset_search(self):
+        """Clear the search (query boxes, last-search state, results pane)
+        while keeping every loaded file. Replaces the old Reset button; its
+        "also remove all files" branch was identical to New Set."""
+        has_search = bool(self.state.last_search or self.query_entry.text()
+                          or self.query_multiline.toPlainText() or self.range_entry.text()
+                          or self.results.toPlainText())
+        if has_search and not self._confirm(
             "Reset search state",
-            "This clears the current search state (your last search term/snippet "
-            "will be forgotten). This cannot be undone.",
+            "This clears the search box and the results (your last search term/snippet "
+            "will be forgotten). Loaded files are kept.",
             yes_label="Reset",
         ):
             self._set_status("Reset cancelled.", "dim")
             return
-
-        if self.state.is_loaded() and self._confirm(
-            "Reset scope",
-            f"Also remove ALL {len(self.state.files)} loaded file(s) and start over?\n\n"
-            f"Yes = remove everything and relaunch file selection.\n"
-            f"No = just reset the search state, keep files loaded.",
-            yes_label="Remove all",
-        ):
-            self.state.clear_files()
-            self._refresh_file_list()
-            self._clear_results()
-            self._set_status("All files removed - relaunching file selection.", "warn")
-            QTimer.singleShot(0, self.on_add)  # see on_change's comment on why this is deferred
-            return
-
         self.state.reset_search()
+        self.query_entry.clear()
+        self.query_multiline.clear()
+        self.range_entry.clear()
         self._clear_results()
         self._set_status("Search state reset.", "ok")
 
@@ -1809,6 +1834,7 @@ class FinderWindow(QMainWindow):
         index = {"one": 0, "multi": 1, "range": 2}[mode]
         self.input_stack.setCurrentIndex(index)
         self.input_stack.setFixedHeight(96 if mode == "multi" else self._one_line_height)
+        QTimer.singleShot(0, self._fit_search_card)
         # Line Range needs one specific file - flag that up front when
         # switching into the mode with several files loaded and none
         # selected yet, instead of only after the user types a range and
@@ -2016,9 +2042,9 @@ class FinderWindow(QMainWindow):
         n = len(self.state.files)
         if total:
             self.results_summary.setText(f"{total} match(es) in {files_hit}/{n} file(s)")
-            self._set_status(f"Found {total} matching occurrence(s) in {files_hit}/{n} file(s).", "ok")
+            self._set_status("Search complete.", "ok")
         else:
             self.results_summary.setText("0 matches")
-            self._set_status("No matches found in any loaded file.", "warn")
+            self._set_status("Search complete - no matches.", "warn")
             self._write("No matches found in any loaded file.\n", color=self._t()["warn"])
         self._flush_results()

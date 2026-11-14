@@ -206,8 +206,6 @@ def build_stylesheet(t, glass):
     QLabel#sectionLabel {{ color: {t['fg_dim']}; font-weight: 600; font-size: 8.5pt; letter-spacing: 1px; }}
     QLabel#statusBar {{ background: {panel_bg}; color: {t['fg_dim']}; padding: 6px 12px; border-radius: 8px; }}
     QLabel#summary {{ color: {t['fg_dim']}; }}
-    QLabel#brand {{ color: {t['fg']}; font-size: 13.5pt; font-weight: 700; }}
-    QLabel#brandTag {{ color: {t['fg_dim']}; font-size: 8.5pt; }}
     QListWidget {{
         background: {card_bg}; border: 1px solid {border_soft}; border-radius: 10px; padding: 4px;
         outline: none;
