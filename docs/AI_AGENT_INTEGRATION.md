@@ -159,7 +159,11 @@ files return a `content_not_inspected` warning.
 Page 1: `search Q --page-size 3`. If `data.more_results` is `"confirmed"`, `data.next_cursor` is
 set; repeat the **identical** search with `--cursor <next_cursor>`. Stop when `next_cursor` is
 `null` (`complete:true`). Cursors are opaque (do not parse, build or edit them) and tied to the exact
-query, mode, flags, roots, paths and filters. Changing anything → `invalid_cursor` (exit 2).
+query, mode, flags, roots, paths and filters. Changing any of those → `invalid_cursor` (exit 2).
+The binding covers: `query`, `mode`, `case_sensitive`, `multiline`, `comment_fallback`, roots,
+`paths`, `ext`, `include`, `exclude`, `context`, and the output kind (matches vs `--files-only`).
+`page_size` / `max_results` (aliases; give only one) are **not** part of it, so they may change
+between pages. The searched files must also be unchanged (else `stale_cursor`, below).
 If any searched file was added, removed or modified → `stale_cursor` (exit 5): restart without a
 cursor. `more_results:"unknown"` means the scan was cut short by a time/byte/file budget; the rest
 was **not** examined.
