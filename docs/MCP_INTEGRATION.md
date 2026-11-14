@@ -128,6 +128,9 @@ Pass one `--root` per directory the agent may read, and nothing broader than nec
 All tools are read-only (`readOnlyHint: true`, `destructiveHint: false`) and reject unknown
 arguments. Argument values are validated by the same code as the CLI, with the same error codes.
 
+The same tool list is browsable in the desktop app (toolbar **Commands** → *MCP Tools*),
+generated from this catalogue; see `docs/AI_AGENT_INTEGRATION.md` §3.
+
 ### `get_capabilities`
 No arguments. Returns the CLI `capabilities` payload (tool/interface/schema versions, commands,
 search modes, limits, pagination, error codes, roots, limitations) plus a `data.mcp` block
