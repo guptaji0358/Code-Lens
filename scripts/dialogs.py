@@ -1208,86 +1208,55 @@ class SettingsPanel(QFrame):
     def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False):
         super().__init__(parent)
         self.setObjectName("panel")
-        self._max_height = 180
+        self._max_height = 56
 
         outer_v = QVBoxLayout(self)
-        outer_v.setContentsMargins(18, 12, 18, 12)
-        outer_v.setSpacing(8)
+        outer_v.setContentsMargins(14, 8, 14, 8)
+        outer_v.setSpacing(0)
 
-        title = QLabel("SETTINGS")
-        title.setObjectName("sectionLabel")
-        outer_v.addWidget(title)
+        # One compact row: every control that used to sit on three separate
+        # rows (theme/glass/accent, the explorer checkbox, the shortcuts line).
+        row = QHBoxLayout()
+        row.setSpacing(18)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(28)
-
-        col1 = QVBoxLayout()
-        theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Theme"))
+        row.addWidget(QLabel("Theme"))
         self.theme_switch = GlassSwitch(self, checked=(theme == "light"),
                                          off_color="#232840", on_color="#ffd166")
-        self.theme_switch.setToolTip("Switch between dark and light theme")
+        self.theme_switch.setToolTip(
+            f"{'Dark' if theme == 'dark' else 'Light'} theme - click to switch")
         self.theme_switch.toggled.connect(lambda checked: self.themeChanged.emit("light" if checked else "dark"))
-        theme_row.addWidget(self.theme_switch)
-        self.mode_lbl = QLabel("Dark mode" if theme == "dark" else "Light mode")
-        self.mode_lbl.setStyleSheet("font-weight: 600;")
-        theme_row.addWidget(self.mode_lbl)
-        theme_row.addStretch()
-        col1.addLayout(theme_row)
-        row1.addLayout(col1)
+        row.addWidget(self.theme_switch)
 
-        col2 = QVBoxLayout()
-        glass_row = QHBoxLayout()
-        glass_row.addWidget(QLabel("Glass Effect"))
+        row.addWidget(QLabel("Glass Effect"))
         self.glass_switch = GlassSwitch(self, checked=glass_enabled,
                                          off_color="#3a3f55", on_color="#4fd1ff")
-        self.glass_switch.setToolTip("Turn the frosted-glass look on or off")
+        self.glass_switch.setToolTip(
+            f"Glass effect {'on' if glass_enabled else 'off'} - click to toggle")
         self.glass_switch.toggled.connect(self.glassChanged.emit)
-        glass_row.addWidget(self.glass_switch)
-        self.glass_lbl = QLabel("On" if glass_enabled else "Off")
-        self.glass_lbl.setStyleSheet("font-weight: 600;")
-        glass_row.addWidget(self.glass_lbl)
-        glass_row.addStretch()
-        col2.addLayout(glass_row)
-        row1.addLayout(col2)
+        row.addWidget(self.glass_switch)
 
-        col3 = QVBoxLayout()
+        self.hide_unsupported_chk = GlassCheckbox("Hide unsupported files",
+                                                    accent=THEMES[theme]["accent"], fg=THEMES[theme]["fg"])
+        self.hide_unsupported_chk.setChecked(hide_unsupported)
+        self.hide_unsupported_chk.setToolTip(
+            "Hide files the search engine can't read (binaries, unknown encodings) "
+            "from the Solution Explorer file list")
+        self.hide_unsupported_chk.toggled.connect(self.hideUnsupportedChanged.emit)
+        row.addWidget(self.hide_unsupported_chk)
+
+        row.addStretch()
+
         self.btn_accent = QPushButton("  Accent Color")
         self.btn_accent.setCursor(Qt.PointingHandCursor)
         self.btn_accent.setToolTip("Pick a custom accent color for buttons and highlights")
         self.btn_accent.clicked.connect(self.accentRequested.emit)
-        col3.addWidget(self.btn_accent)
-        row1.addLayout(col3)
+        row.addWidget(self.btn_accent)
 
-        row1.addStretch()
-        outer_v.addLayout(row1)
-
-        explorer_row = QHBoxLayout()
-        self.hide_unsupported_chk = GlassCheckbox("Hide unsupported files in Solution Explorer",
-                                                    accent=THEMES[theme]["accent"], fg=THEMES[theme]["fg"])
-        self.hide_unsupported_chk.setChecked(hide_unsupported)
-        self.hide_unsupported_chk.setToolTip(
-            "Hide files the search engine can't read (binaries, unknown encodings) from the file list")
-        self.hide_unsupported_chk.toggled.connect(self.hideUnsupportedChanged.emit)
-        explorer_row.addWidget(self.hide_unsupported_chk)
-        explorer_row.addStretch()
-        outer_v.addLayout(explorer_row)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(12)
-        sc_title = QLabel("Shortcuts:")
-        sc_title.setStyleSheet("font-weight: 600;")
-        row2.addWidget(sc_title)
-        self.shortcuts_lbl = QLabel()
-        self.shortcuts_lbl.setObjectName("summary")
-        self.shortcuts_lbl.setWordWrap(True)
-        row2.addWidget(self.shortcuts_lbl, 1)
         self.btn_shortcuts = QPushButton("  Edit Shortcuts")
         self.btn_shortcuts.setCursor(Qt.PointingHandCursor)
-        self.btn_shortcuts.setToolTip("View and rebind every keyboard shortcut")
         self.btn_shortcuts.clicked.connect(self.shortcutsRequested.emit)
-        row2.addWidget(self.btn_shortcuts)
-        outer_v.addLayout(row2)
+        row.addWidget(self.btn_shortcuts)
+        outer_v.addLayout(row)
         self.set_shortcuts_summary(shortcut_keys)
 
         self.setMaximumHeight(0)
@@ -1297,16 +1266,23 @@ class SettingsPanel(QFrame):
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._visible = False
 
+    # The switches show their own state, so the old "Dark mode"/"On" text
+    # labels beside them were pure repetition; the state is in the tooltip.
     def set_theme_label(self, theme):
-        self.mode_lbl.setText("Dark mode" if theme == "dark" else "Light mode")
+        self.theme_switch.setToolTip(
+            f"{'Dark' if theme == 'dark' else 'Light'} theme - click to switch")
 
     def set_glass_label(self, glass_enabled):
-        self.glass_lbl.setText("On" if glass_enabled else "Off")
+        self.glass_switch.setToolTip(
+            f"Glass effect {'on' if glass_enabled else 'off'} - click to toggle")
 
     def set_shortcuts_summary(self, shortcut_keys):
-        parts = [f"{label} · {shortcut_keys.get(key, default)}"
+        """The shortcut list lives in the Edit Shortcuts dialog; the button's
+        tooltip carries the current bindings instead of a permanent line of
+        text that repeated them."""
+        parts = [f"{label} - {shortcut_keys.get(key, default)}"
                  for key, label, default in SHORTCUT_ACTIONS]
-        self.shortcuts_lbl.setText("   |   ".join(parts))
+        self.btn_shortcuts.setToolTip("View and rebind every keyboard shortcut\n" + "\n".join(parts))
 
     def set_accent_button_style(self, accent_hex, dim, panel_bg, fg=None):
         self.btn_accent.setIcon(QIcon())

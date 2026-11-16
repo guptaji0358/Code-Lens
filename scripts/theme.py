@@ -206,8 +206,6 @@ def build_stylesheet(t, glass):
     QLabel#sectionLabel {{ color: {t['fg_dim']}; font-weight: 600; font-size: 8.5pt; letter-spacing: 1px; }}
     QLabel#statusBar {{ background: {panel_bg}; color: {t['fg_dim']}; padding: 6px 12px; border-radius: 8px; }}
     QLabel#summary {{ color: {t['fg_dim']}; }}
-    QLabel#brand {{ color: {t['fg']}; font-size: 13.5pt; font-weight: 700; }}
-    QLabel#brandTag {{ color: {t['fg_dim']}; font-size: 8.5pt; }}
     QListWidget {{
         background: {card_bg}; border: 1px solid {border_soft}; border-radius: 10px; padding: 4px;
         outline: none;
@@ -243,6 +241,22 @@ def build_stylesheet(t, glass):
     QToolButton#danger:hover {{ background: {t['danger']}; color: white; border-color: {t['danger']}; }}
     QToolButton#warn:hover {{ background: {t['warn']}; color: #1c1300; border-color: {t['warn']}; }}
     QToolButton#viewToggle {{ padding: 4px; border-radius: 8px; }}
+    QFrame#appHeader {{ background: {panel_bg}; border: none; border-bottom: 1px solid {border_soft}; border-radius: 0; }}
+    QFrame#appHeader QLabel {{ background: transparent; border: none; }}
+    QLabel#appTitle {{ font-size: 12pt; font-weight: 700; }}
+    QLabel#appDescriptor {{ color: {t['fg_dim']}; font-size: 9pt; }}
+    QLineEdit#headerSearch {{ background: {input_bg}; border: 1px solid {border_soft}; border-radius: 8px; padding: 2px 10px; font-family: '{FONT_UI}'; font-size: 9pt; }}
+    QLineEdit#headerSearch:focus {{ border: 1px solid {accent}; }}
+    QLineEdit#headerSearch:disabled {{ color: {t['fg_dim']}; }}
+    QToolButton#headerAction {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 5px 9px; }}
+    QToolButton#headerAction:hover {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
+    QToolButton#winCtl, QToolButton#winClose {{
+        background: transparent; border: none; border-radius: 0; padding: 0;
+        font-family: 'Segoe MDL2 Assets', 'Segoe Fluent Icons'; font-size: 9pt; color: {t['fg']};
+    }}
+    QToolButton#winCtl:hover {{ background: {card_hover_bg}; color: {t['fg']}; }}
+    QToolButton#winClose:hover {{ background: #e81123; color: white; }}
+    QToolButton#headerAction::menu-indicator {{ image: none; }}
     QRadioButton {{
         background: {card_bg}; border: 1px solid {border}; border-radius: 10px;
         padding: 7px 12px;

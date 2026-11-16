@@ -15,7 +15,7 @@ SHORTCUT_ACTIONS = [
     ("search", "Run Search", "Ctrl+Return"),
     ("add", "Add File(s)", "Alt+A"),
     ("reload", "Reload Files", "Ctrl+R"),
-    ("reset", "Reset", "Ctrl+Shift+R"),
+    ("reset", "Reset Search State", "Ctrl+Shift+R"),
     ("clear_results", "Clear Results", "Shift+C"),
     ("case_sensitive", "Toggle Case Sensitive", "Alt+S"),
 ]

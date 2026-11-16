@@ -1,0 +1,12 @@
+{
+  "id": "window-snapshot",
+  "name": "Window snapshot + pixel facts",
+  "description": "Capture the CodeLens window to build/snapshots/<name>.png (optionally launching it) and return size, blank check, top colours, luminance, baseline diff, region and pixel facts as JSON. Python only measures; the agent judges.",
+  "entry": "scripts/window_snapshot.py",
+  "input_schema": {"title_contains": {"type": "string"}, "launch": {"type": "boolean"}, "name": {"type": "string"}, "baseline": {"type": "string"}, "save_baseline": {"type": "boolean"}, "regions": {"type": "array"}, "pixels": {"type": "array"}},
+  "timeout_s": 30,
+  "risk": 1,
+  "version": "1.0.0",
+  "status": "active",
+  "cache": false
+}

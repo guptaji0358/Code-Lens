@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QIcon, QPainter, QColor, QPen, QPixmap, QLinearGradient, QShortcut, QKeySequence, QFont,
-    QFontMetrics,
+    QFontMetrics, QAction,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
-    QMenu, QFileIconProvider, QWidgetAction,
+    QMenu, QFileIconProvider, QWidgetAction, QSizePolicy,
 )
 
 import CodeLensCLI as core
@@ -52,6 +52,7 @@ from results_render import _html_render_file_card
 
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
+HEADER_DESCRIPTOR = "AI Code Intelligence"
 
 
 class _AsyncWorker(QObject):
@@ -146,6 +147,10 @@ class FinderWindow(QMainWindow):
         self.resize(1220, 780)
         self.setMinimumSize(880, 560)
         self.setAcceptDrops(True)
+        # The in-window header IS the title bar: the native one is dropped so
+        # its blank strip is reclaimed. Min/max/close, drag and edge-resize
+        # are provided by the header (see _build_header / eventFilter).
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
 
         self._tool_buttons = []
 
@@ -154,6 +159,8 @@ class FinderWindow(QMainWindow):
         self._refresh_tooltips()
         self._apply_theme(animate=False)
         self._refresh_file_list()
+        self._fit_search_card()
+        self._update_toolbar_density()
         self._set_status("Ready - press Alt+A or click Add to load a file.", "ok")
 
         # Pre-warm the installed-editors cache in the background so the
@@ -200,30 +207,21 @@ class FinderWindow(QMainWindow):
         root = QWidget(self.backdrop)
         root.setObjectName("root")
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(14, 12, 14, 10)
-        outer.setSpacing(8)
+        outer.setContentsMargins(0, 0, 0, 0)  # header/title bar runs edge to edge
+        outer.setSpacing(0)
+        self._root = root
+        root.setMouseTracking(True)
+        root.installEventFilter(self)  # edge-resize cursor + system resize (frameless window)
 
         def relayout_root():
             root.setGeometry(self.backdrop.rect())
         self.backdrop.resizeEvent = lambda e: relayout_root()
 
-        # ---- brand row ---------------------------------------------------
-        brand_row = QHBoxLayout()
-        brand_icon = QLabel()
-        brand_icon.setObjectName("brandIcon")
-        self._brand_icon_lbl = brand_icon
-        brand_row.addWidget(brand_icon)
-        brand_col = QVBoxLayout()
-        brand_col.setSpacing(0)
-        name_lbl = QLabel(APP_NAME)
-        name_lbl.setObjectName("brand")
-        tag_lbl = QLabel(APP_TAGLINE)
-        tag_lbl.setObjectName("brandTag")
-        brand_col.addWidget(name_lbl)
-        brand_col.addWidget(tag_lbl)
-        brand_row.addLayout(brand_col)
-        brand_row.addStretch()
-        outer.addLayout(brand_row)
+        self._build_header(outer)
+        content = QVBoxLayout()
+        content.setContentsMargins(12, 8, 12, 8)
+        content.setSpacing(6)
+        outer.addLayout(content, 1)
 
         # ---- toolbar ---------------------------------------------------
         toolbar = QHBoxLayout()
@@ -241,32 +239,34 @@ class FinderWindow(QMainWindow):
                                          tooltip="Add file(s) to the working set")
         self.btn_remove = make_tool_button("Remove", "remove", self.on_remove, "danger",
                                             tooltip="Remove the selected file(s) from the working set")
+        # Split button: the main click is New Set; the dropdown also holds
+        # "Reset search state" (what the separate Reset button used to do).
         self.btn_change = make_tool_button("New Set", "change", self.on_change,
                                             tooltip="Clear everything and start a fresh file set")
+        self.btn_change.setPopupMode(QToolButton.MenuButtonPopup)
+        self.change_menu = style_menu(QMenu(self))
+        self.act_new_set = self.change_menu.addAction("New file set…")
+        self.act_new_set.triggered.connect(self.on_change)
+        self.act_reset_search = self.change_menu.addAction("Reset search state")
+        self.act_reset_search.triggered.connect(self.on_reset_search)
+        self.btn_change.setMenu(self.change_menu)
         self.btn_reload = make_tool_button("Reload", "reload", self.on_reload,
                                             tooltip="Reload every loaded file from disk")
-        self.btn_reset = make_tool_button("Reset", "reset", self.on_reset, "warn",
-                                           tooltip="Reset search state, or clear everything")
         self.btn_clear = make_tool_button("Clear Results", "clear", self.on_clear_results,
                                            tooltip="Clear the results pane")
         self.btn_details = make_tool_button("Details", "details", self.on_show_details,
                                              tooltip="View full details for every loaded file")
         self.btn_recent = make_tool_button("Recent", "lines", self.on_show_recent,
                                             tooltip="Reopen a recently used folder")
-        self.btn_commands = make_tool_button("Commands", "info", self.on_show_commands,
-                                              tooltip="AI Command Reference: MCP tools and CLI commands")
-        for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
-                  self.btn_reset, self.btn_clear, self.btn_details, self.btn_commands):
+        for b in (self.btn_remove, self.btn_change, self.btn_recent,
+                  self.btn_clear, self.btn_details):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
+        # Add and Reload live in the title bar (moved, not duplicated).
+        self._move_actions_to_header()
         toolbar.addStretch()
 
-        self.btn_settings = make_tool_button("Settings", "settings", self.on_toggle_settings,
-                                              tooltip="Open theme, glass, accent, and shortcut settings")
-        toolbar.addWidget(self.btn_settings)
-        self._tool_buttons.append(self.btn_settings)
-
-        outer.addLayout(toolbar)
+        content.addLayout(toolbar)
 
         # ---- settings (collapsible) ------------------------------------
         self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys,
@@ -277,7 +277,7 @@ class FinderWindow(QMainWindow):
         self.settings_panel.accentRequested.connect(self.on_pick_accent)
         self.settings_panel.shortcutsRequested.connect(self.on_edit_shortcuts)
         self.btn_accent = self.settings_panel.btn_accent
-        outer.addWidget(self.settings_panel)
+        content.addWidget(self.settings_panel)
 
         # ---- body: crossfade container ---------------------------------
         self.fade_widget = QWidget()
@@ -286,11 +286,11 @@ class FinderWindow(QMainWindow):
         self.fade_effect.setOpacity(1.0)
         body_outer = QVBoxLayout(self.fade_widget)
         body_outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.fade_widget, 1)
+        content.addWidget(self.fade_widget, 1)
 
         self.splitter = QSplitter(Qt.Horizontal)
         splitter = self.splitter
-        splitter.setHandleWidth(8)
+        splitter.setHandleWidth(6)
         splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         body_outer.addWidget(splitter)
 
@@ -299,7 +299,7 @@ class FinderWindow(QMainWindow):
         self.left_panel = left
         left.setObjectName("panel")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setContentsMargins(10, 10, 10, 10)
 
         header_row = QHBoxLayout()
         lbl = QLabel("LOADED FILES")
@@ -377,14 +377,15 @@ class FinderWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         right_splitter = QSplitter(Qt.Vertical)
-        right_splitter.setHandleWidth(8)
+        right_splitter.setHandleWidth(6)
         right_splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
         right_layout.addWidget(right_splitter)
 
         search_card = QFrame()
+        self.search_card = search_card
         search_card.setObjectName("card")
         sc_layout = QVBoxLayout(search_card)
-        sc_layout.setContentsMargins(16, 14, 16, 14)
+        sc_layout.setContentsMargins(12, 10, 12, 10)
         self._glass_cards.append(search_card)
 
         mode_row = QHBoxLayout()
@@ -452,7 +453,7 @@ class FinderWindow(QMainWindow):
         results_card = QFrame()
         results_card.setObjectName("card")
         rc_layout = QVBoxLayout(results_card)
-        rc_layout.setContentsMargins(16, 12, 16, 12)
+        rc_layout.setContentsMargins(12, 8, 12, 10)
         self._glass_cards.append(results_card)
 
         rc_header = QHBoxLayout()
@@ -494,7 +495,7 @@ class FinderWindow(QMainWindow):
         right_splitter.addWidget(results_card)
         right_splitter.setStretchFactor(0, 0)
         right_splitter.setStretchFactor(1, 1)
-        right_splitter.setSizes([180, 560])
+        self.right_splitter = right_splitter
 
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
@@ -504,9 +505,15 @@ class FinderWindow(QMainWindow):
         # ---- status bar --------------------------------------------------
         self.status = QLabel("")
         self.status.setObjectName("statusBar")
-        outer.addWidget(self.status)
+        content.addWidget(self.status)
 
         relayout_root()
+
+        # Header search mirrors the inputs built above.
+        for entry in (self.query_entry, self.range_entry):
+            entry.textChanged.connect(self._sync_header_search_text)
+        self.mode_group.buttonToggled.connect(self._sync_header_search_mode)
+        self._sync_header_search_mode()
 
         # Created last so it's the topmost child by default (also re-raised
         # on every start() call) - one overlay instance covers the entire
@@ -514,9 +521,313 @@ class FinderWindow(QMainWindow):
         self._busy_overlay = BusyOverlay(self)
         self._busy_overlay.cancelRequested.connect(self._on_cancel_load)
 
+    # ----------------------------------------------------------- header --
+    def _build_header(self, outer):
+        """Application header inside the Qt window (below the native title
+        bar, which is left alone): brand identity on the left, app-level
+        actions on the right. File-set actions stay in the toolbar below;
+        Commands and Settings live here instead of in the toolbar (moved,
+        not duplicated), plus a one-click dark/light toggle."""
+        self.app_header = QFrame()
+        self.app_header.setObjectName("appHeader")
+        self.app_header.setFixedHeight(42)
+        self.app_header.setMouseTracking(True)
+        self.app_header.installEventFilter(self)  # drag-to-move, double-click maximize
+        row = QHBoxLayout(self.app_header)
+        self._header_row = row
+        row.setContentsMargins(14, 0, 0, 0)
+        row.setSpacing(8)
+
+        self.header_logo = QLabel()
+        self.header_logo.setObjectName("appLogo")
+        self.header_logo.setFixedSize(26, 26)
+        self.header_logo.setScaledContents(True)
+        self.header_logo.setPixmap(QIcon(APP_ICON_PATH).pixmap(52, 52))
+        row.addWidget(self.header_logo)
+
+        self.header_title = QLabel(APP_NAME)
+        self.header_title.setObjectName("appTitle")
+        row.addWidget(self.header_title)
+
+        self.header_descriptor = QLabel(HEADER_DESCRIPTOR)
+        self.header_descriptor.setObjectName("appDescriptor")
+        row.addWidget(self.header_descriptor)
+
+        # Centre section: a view onto the existing search input (no search
+        # logic of its own) so the header's middle is useful, not blank.
+        # Flanked by equal stretches so it stays centred between identity and
+        # actions; it grows to _HEADER_SEARCH_MAX, shrinks to its minimum.
+        row.addStretch(1)
+        self.header_search = QLineEdit()
+        self.header_search.setObjectName("headerSearch")
+        self.header_search.setClearButtonEnabled(True)
+        self.header_search.setMinimumWidth(self._HEADER_SEARCH_MIN)
+        self.header_search.setMaximumWidth(self._HEADER_SEARCH_MAX)
+        self.header_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header_search.setFixedHeight(30)
+        self.header_search.textEdited.connect(self._on_header_search_edited)
+        self.header_search.returnPressed.connect(self.on_search)
+        row.addWidget(self.header_search, 100)
+        row.addStretch(1)
+
+        self.btn_theme_toggle = make_tool_button("", "moon", self.on_toggle_theme)
+        self.btn_theme_toggle.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_commands = make_tool_button("AI Commands", "info", self.on_show_commands,
+                                              tooltip="AI Command Reference: MCP tools and CLI commands")
+        self.btn_settings = make_tool_button("Settings", "settings", self.on_toggle_settings,
+                                              tooltip="Open theme, glass, accent, and shortcut settings")
+        # Overflow for lower-priority actions when the header runs out of
+        # room; only shown while something is collapsed into it.
+        self.btn_header_more = make_tool_button("", "menu", lambda: None, tooltip="More actions")
+        self.btn_header_more.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_header_more.setPopupMode(QToolButton.InstantPopup)
+        self.header_menu = style_menu(QMenu(self))
+        self.btn_header_more.setMenu(self.header_menu)
+        self.btn_header_more.hide()
+
+        # Priority order: later entries collapse into the overflow first.
+        self._header_actions = [self.btn_settings, self.btn_commands, self.btn_theme_toggle]
+        self._header_menu_actions = {}
+        for b, label in ((self.btn_commands, "AI Command Reference"),
+                         (self.btn_theme_toggle, "Switch theme"),
+                         (self.btn_settings, "Settings")):
+            b.setObjectName("headerAction")
+            self._tool_buttons.append(b)
+            act = QAction(label, self)
+            act.triggered.connect(b.click)
+            self._header_menu_actions[b] = act
+        self.btn_header_more.setObjectName("headerAction")
+        self._tool_buttons.append(self.btn_header_more)
+        self._header_collapsed = []
+
+        for b in (self.btn_theme_toggle, self.btn_commands, self.btn_settings, self.btn_header_more):
+            row.addWidget(b)
+
+        # Window controls (Segoe MDL2 glyphs, Windows' own look).
+        row.addSpacing(6)
+        self.win_controls = []
+        for attr, glyph, tip, slot in (
+            ("btn_win_min", "\uE921", "Minimize", self.showMinimized),
+            ("btn_win_max", "\uE922", "Maximize", self._toggle_maximize),
+            ("btn_win_close", "\uE8BB", "Close", self.close),
+        ):
+            b = QToolButton()
+            b.setObjectName("winClose" if attr == "btn_win_close" else "winCtl")
+            b.setText(glyph)
+            b.setToolTip(tip)
+            b.setFixedSize(46, 42)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(slot)
+            setattr(self, attr, b)
+            self.win_controls.append(b)
+            row.addWidget(b)
+        outer.addWidget(self.app_header)
+
+    def _move_actions_to_header(self):
+        """Put the common file actions (Add, Reload) in the title bar as
+        icon-only buttons, ahead of the app-level actions; they join the
+        overflow priority list above Settings."""
+        row = self._header_row
+        at = row.indexOf(self.btn_theme_toggle)
+        for b, label in ((self.btn_add, "Add file(s)"), (self.btn_reload, "Reload files")):
+            b.setText("")  # icon-only; the tooltip carries the name
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            b.setObjectName("headerAction")
+            row.insertWidget(at, b)
+            at += 1
+            self._tool_buttons.append(b)
+            act = QAction(label, self)
+            act.triggered.connect(b.click)
+            self._header_menu_actions[b] = act
+        self._header_actions = [self.btn_add, self.btn_reload] + self._header_actions
+
+    _HEADER_SEARCH_MIN = 140
+    _HEADER_SEARCH_MAX = 520
+
+    def _header_search_target(self):
+        """The existing input the header field stands in for (None in
+        Multi Line mode, whose snippet box cannot be a single-line field)."""
+        return {"one": self.query_entry, "range": self.range_entry}.get(self._mode_value())
+
+    def _on_header_search_edited(self, text):
+        target = self._header_search_target()
+        if target is not None:
+            target.setText(text)  # textChanged -> _sync_header_search_text is a no-op
+
+    def _sync_header_search_text(self, _text=None):
+        target = self._header_search_target()
+        if target is not None and self.sender() in (None, target):
+            if self.header_search.text() != target.text():
+                self.header_search.setText(target.text())
+
+    def _sync_header_search_mode(self, *_args):
+        mode = self._mode_value()
+        target = self._header_search_target()
+        hs = self.header_search
+        hs.setEnabled(target is not None)
+        if target is None:
+            hs.setText("")
+            hs.setPlaceholderText("Multi Line: use the snippet box below")
+        else:
+            hs.setText(target.text())
+            hs.setPlaceholderText("Search loaded files…  (Ctrl+K)" if mode == "one"
+                                  else "Line range, e.g. 1500-3000  (Ctrl+K)")
+        hs.setToolTip("Quick search - the same input as the search box below. "
+                      "Press Enter to search, Esc to clear, Ctrl+K to focus.")
+
+    def _focus_header_search(self):
+        if self.header_search.isEnabled():
+            self.header_search.setFocus()
+            self.header_search.selectAll()
+        else:  # Multi Line: send focus to the real snippet box instead
+            self.query_multiline.setFocus()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.header_search.hasFocus():
+            self.header_search.clear()
+            self._on_header_search_edited("")
+            return
+        super().keyPressEvent(event)
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == event.Type.WindowStateChange and hasattr(self, "btn_win_max"):
+            maxed = self.isMaximized()
+            self.btn_win_max.setText("\uE923" if maxed else "\uE922")
+            self.btn_win_max.setToolTip("Restore" if maxed else "Maximize")
+
+    _RESIZE_MARGIN = 6
+
+    def _resize_edges(self, widget, pos):
+        """Qt.Edges under `pos` (widget coords) for the frameless resize grip."""
+        if self.isMaximized() or self.isFullScreen():
+            return Qt.Edges()
+        g = widget.mapTo(self, pos)
+        m, edges = self._RESIZE_MARGIN, Qt.Edges()
+        if g.x() < m:
+            edges |= Qt.LeftEdge
+        elif g.x() >= self.width() - m:
+            edges |= Qt.RightEdge
+        if g.y() < m:
+            edges |= Qt.TopEdge
+        elif g.y() >= self.height() - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if obj in (getattr(self, "app_header", None), getattr(self, "_root", None)) and et in (
+                event.Type.MouseMove, event.Type.MouseButtonPress, event.Type.MouseButtonDblClick):
+            edges = self._resize_edges(obj, event.position().toPoint())
+            if et == event.Type.MouseMove:
+                if edges in (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeFDiagCursor)
+                elif edges in (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeBDiagCursor)
+                elif edges & (Qt.LeftEdge | Qt.RightEdge):
+                    obj.setCursor(Qt.SizeHorCursor)
+                elif edges & (Qt.TopEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeVerCursor)
+                else:
+                    obj.unsetCursor()
+            elif event.button() == Qt.LeftButton:
+                handle = self.windowHandle()
+                if edges and et == event.Type.MouseButtonPress and handle:
+                    handle.startSystemResize(edges)
+                    return True
+                if obj is self.app_header and not edges:
+                    if et == event.Type.MouseButtonDblClick:
+                        self._toggle_maximize()
+                        return True
+                    if handle and not self.isMaximized():
+                        handle.startSystemMove()
+                        return True
+        return super().eventFilter(obj, event)
+
+    def on_toggle_theme(self):
+        self.set_theme("light" if self.theme == "dark" else "dark")
+
+    def _update_header_layout(self, avail=None):
+        """Collapse lower-priority header actions into the overflow menu when
+        the header is too narrow. The title is never clipped: the descriptor
+        goes first, then actions in reverse priority order."""
+        if avail is None:
+            avail = self.app_header.width()
+        spacing = self.app_header.layout().spacing()
+        fixed = (14 + self.header_logo.width() + self.header_title.sizeHint().width() + 2 * spacing
+                 + 6 + sum(b.width() + spacing for b in self.win_controls)
+                 + self._HEADER_SEARCH_MIN + 3 * spacing)  # search keeps its minimum before anything else yields
+        descriptor_w = self.header_descriptor.sizeHint().width() + spacing
+        widths = {b: b.sizeHint().width() + spacing for b in self._header_actions}
+        more_w = self.btn_header_more.sizeHint().width() + spacing
+        total = sum(widths.values())
+
+        show_descriptor = fixed + descriptor_w + total <= avail
+        self.header_descriptor.setVisible(show_descriptor)
+        room = avail - fixed - (descriptor_w if show_descriptor else 0)
+
+        shown = list(self._header_actions)
+        while shown and (sum(widths[b] for b in shown)
+                         + (more_w if len(shown) < len(self._header_actions) else 0)) > room:
+            shown.pop()
+        collapsed = [b for b in self._header_actions if b not in shown]
+        for b in self._header_actions:
+            b.setVisible(b in shown)
+        self.btn_header_more.setVisible(bool(collapsed))
+        # removeAction, not clear(): clear() would delete the QAction objects.
+        for act in self.header_menu.actions():
+            self.header_menu.removeAction(act)
+        for b in collapsed:  # highest priority first
+            self.header_menu.addAction(self._header_menu_actions[b])
+        self._header_collapsed = collapsed
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._busy_overlay.setGeometry(self.rect())
+        self._update_toolbar_density()
+
+    def _fit_search_card(self):
+        """Give the search card exactly the height its content needs (the
+        results pane gets all the rest) instead of a fixed pixel size that
+        left a band of empty glass above/below the input."""
+        card = self.search_card
+        card.layout().activate()
+        sizes = self.right_splitter.sizes()
+        total = sum(sizes) or self.right_splitter.height()
+        need = card.sizeHint().height()
+        if total > need:
+            self.right_splitter.setSizes([need, total - need])
+
+    def _update_toolbar_density(self):
+        """Labelled toolbar buttons when they fit, icon-only (tooltips carry
+        the names) when the window is too narrow - instead of Qt eliding every
+        label down to '...'."""
+        labelled = (self.btn_remove, self.btn_change, self.btn_recent,
+                    self.btn_clear, self.btn_details)
+        header_labelled = (self.btn_commands, self.btn_settings)
+        if not hasattr(self, "_toolbar_full_width"):
+            for b in header_labelled:
+                b._label_text = b.text()
+                b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            for b in labelled:
+                b._label_text = b.text()
+                b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            self._toolbar_full_width = (sum(b.sizeHint().width() for b in labelled)
+                                        + self.btn_explorer.width() + 6 * len(labelled) + 24)
+            self._toolbar_icon_only = False
+        avail = self.width() - 24
+        want_icons = avail < self._toolbar_full_width
+        if want_icons != self._toolbar_icon_only:
+            self._toolbar_icon_only = want_icons
+            for b in labelled + header_labelled:
+                b.setToolButtonStyle(Qt.ToolButtonIconOnly if want_icons else Qt.ToolButtonTextBesideIcon)
+        self._update_header_layout(self.width() - 24)
 
     # ---------------------------------------------------------- theming --
     def _effective_theme(self):
@@ -539,12 +850,22 @@ class FinderWindow(QMainWindow):
                     hover_icon_cache[name] = icon(name, "hover")
                 return hover_icon_cache[name]
 
+            # Header toggle shows the theme you'd switch TO.
+            self.btn_theme_toggle._icon_name = "moon" if self.theme == "light" else "sun"
+            self.btn_theme_toggle.setToolTip(
+                f"Switch to {'dark' if self.theme == 'light' else 'light'} theme")
+            sw = self.settings_panel.theme_switch
+            if sw.isChecked() != (self.theme == "light"):
+                sw.setChecked(self.theme == "light")  # re-enters set_theme, a no-op
+
             for b in self._tool_buttons:
                 if b._icon_name in ACCENT_ICON_NAMES and self.custom_accent:
                     normal = tinted_icon(b._icon_name, self.theme, self.custom_accent)
                 else:
                     normal = icon(b._icon_name, self.theme)
                 b.set_icons(normal, hover_icon(b._icon_name))
+            self.act_new_set.setIcon(icon("change", self.theme))
+            self.act_reset_search.setIcon(icon("reset", self.theme))
             for rb in self.mode_buttons.values():
                 if rb._icon_name in ACCENT_ICON_NAMES and self.custom_accent:
                     normal = tinted_icon(rb._icon_name, self.theme, self.custom_accent)
@@ -566,7 +887,6 @@ class FinderWindow(QMainWindow):
             # look instead comes from the translucent background plus
             # the soft highlight border in build_stylesheet().
 
-            self._brand_icon_lbl.setPixmap(QIcon(APP_ICON_PATH).pixmap(34, 34))
             try:
                 self.setWindowIcon(QIcon(APP_ICON_PATH))
             except Exception:
@@ -647,7 +967,7 @@ class FinderWindow(QMainWindow):
             "search": self.on_search,
             "add": self.on_add,
             "reload": self.on_reload,
-            "reset": self.on_reset,
+            "reset": self.on_reset_search,
             "clear_results": self.on_clear_results,
             "case_sensitive": lambda: self.case_chk.setChecked(not self.case_chk.isChecked()),
         }
@@ -665,6 +985,10 @@ class FinderWindow(QMainWindow):
         numpad.activated.connect(self.on_search)
         self._shortcut_objs["search_numpad"] = numpad
         self._all_shortcuts.append(numpad)
+
+        focus_sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        focus_sc.activated.connect(self._focus_header_search)
+        self._all_shortcuts.append(focus_sc)
 
         # Results zoom - fixed, not part of the editable shortcut list.
         for seq in ("Ctrl+=", "Ctrl++"):
@@ -709,7 +1033,11 @@ class FinderWindow(QMainWindow):
         keys = self.shortcut_keys
         self.btn_add.setToolTip(f"Add file(s) to the working set  ({keys['add']})")
         self.btn_reload.setToolTip(f"Reload every loaded file from disk  ({keys['reload']})")
-        self.btn_reset.setToolTip(f"Reset search state, or clear everything  ({keys['reset']})")
+        self.btn_change.setToolTip("Clear everything and start a fresh file set\n"
+                                   "Use the arrow for more: reset search state only  "
+                                   f"({keys['reset']})")
+        self.act_reset_search.setText("Reset search state")
+        self.act_reset_search.setToolTip(f"Clear the search box and results, keep loaded files  ({keys['reset']})")
         self.btn_clear.setToolTip(f"Clear the results pane  ({keys['clear_results']})")
         self.search_btn.setToolTip(f"Run the search  ({keys['search']})")
         self.case_chk.setToolTip(f"Toggle case-sensitive matching  ({keys['case_sensitive']})")
@@ -1707,31 +2035,25 @@ class FinderWindow(QMainWindow):
 
         self._run_busy(work, done, "Reloading file(s) from disk...")
 
-    def on_reset(self):
-        if not self._confirm(
+    def on_reset_search(self):
+        """Clear the search (query boxes, last-search state, results pane)
+        while keeping every loaded file. Replaces the old Reset button; its
+        "also remove all files" branch was identical to New Set."""
+        has_search = bool(self.state.last_search or self.query_entry.text()
+                          or self.query_multiline.toPlainText() or self.range_entry.text()
+                          or self.results.toPlainText())
+        if has_search and not self._confirm(
             "Reset search state",
-            "This clears the current search state (your last search term/snippet "
-            "will be forgotten). This cannot be undone.",
+            "This clears the search box and the results (your last search term/snippet "
+            "will be forgotten). Loaded files are kept.",
             yes_label="Reset",
         ):
             self._set_status("Reset cancelled.", "dim")
             return
-
-        if self.state.is_loaded() and self._confirm(
-            "Reset scope",
-            f"Also remove ALL {len(self.state.files)} loaded file(s) and start over?\n\n"
-            f"Yes = remove everything and relaunch file selection.\n"
-            f"No = just reset the search state, keep files loaded.",
-            yes_label="Remove all",
-        ):
-            self.state.clear_files()
-            self._refresh_file_list()
-            self._clear_results()
-            self._set_status("All files removed - relaunching file selection.", "warn")
-            QTimer.singleShot(0, self.on_add)  # see on_change's comment on why this is deferred
-            return
-
         self.state.reset_search()
+        self.query_entry.clear()
+        self.query_multiline.clear()
+        self.range_entry.clear()
         self._clear_results()
         self._set_status("Search state reset.", "ok")
 
@@ -1809,6 +2131,7 @@ class FinderWindow(QMainWindow):
         index = {"one": 0, "multi": 1, "range": 2}[mode]
         self.input_stack.setCurrentIndex(index)
         self.input_stack.setFixedHeight(96 if mode == "multi" else self._one_line_height)
+        QTimer.singleShot(0, self._fit_search_card)
         # Line Range needs one specific file - flag that up front when
         # switching into the mode with several files loaded and none
         # selected yet, instead of only after the user types a range and
@@ -2016,9 +2339,9 @@ class FinderWindow(QMainWindow):
         n = len(self.state.files)
         if total:
             self.results_summary.setText(f"{total} match(es) in {files_hit}/{n} file(s)")
-            self._set_status(f"Found {total} matching occurrence(s) in {files_hit}/{n} file(s).", "ok")
+            self._set_status("Search complete.", "ok")
         else:
             self.results_summary.setText("0 matches")
-            self._set_status("No matches found in any loaded file.", "warn")
+            self._set_status("Search complete - no matches.", "warn")
             self._write("No matches found in any loaded file.\n", color=self._t()["warn"])
         self._flush_results()
