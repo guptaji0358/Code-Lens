@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QIcon, QPainter, QColor, QPen, QPixmap, QLinearGradient, QShortcut, QKeySequence, QFont,
-    QFontMetrics,
+    QFontMetrics, QAction,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -52,6 +52,7 @@ from results_render import _html_render_file_card
 
 APP_NAME = "CodeLens"
 APP_TAGLINE = "Precision line & symbol search"
+HEADER_DESCRIPTOR = "AI Code Intelligence"
 
 
 class _AsyncWorker(QObject):
@@ -146,6 +147,10 @@ class FinderWindow(QMainWindow):
         self.resize(1220, 780)
         self.setMinimumSize(880, 560)
         self.setAcceptDrops(True)
+        # The in-window header IS the title bar: the native one is dropped so
+        # its blank strip is reclaimed. Min/max/close, drag and edge-resize
+        # are provided by the header (see _build_header / eventFilter).
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
 
         self._tool_buttons = []
 
@@ -202,12 +207,21 @@ class FinderWindow(QMainWindow):
         root = QWidget(self.backdrop)
         root.setObjectName("root")
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(12, 8, 12, 8)
-        outer.setSpacing(6)
+        outer.setContentsMargins(0, 0, 0, 0)  # header/title bar runs edge to edge
+        outer.setSpacing(0)
+        self._root = root
+        root.setMouseTracking(True)
+        root.installEventFilter(self)  # edge-resize cursor + system resize (frameless window)
 
         def relayout_root():
             root.setGeometry(self.backdrop.rect())
         self.backdrop.resizeEvent = lambda e: relayout_root()
+
+        self._build_header(outer)
+        content = QVBoxLayout()
+        content.setContentsMargins(12, 8, 12, 8)
+        content.setSpacing(6)
+        outer.addLayout(content, 1)
 
         # ---- toolbar ---------------------------------------------------
         toolbar = QHBoxLayout()
@@ -244,20 +258,13 @@ class FinderWindow(QMainWindow):
                                              tooltip="View full details for every loaded file")
         self.btn_recent = make_tool_button("Recent", "lines", self.on_show_recent,
                                             tooltip="Reopen a recently used folder")
-        self.btn_commands = make_tool_button("Commands", "info", self.on_show_commands,
-                                              tooltip="AI Command Reference: MCP tools and CLI commands")
         for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
-                  self.btn_clear, self.btn_details, self.btn_commands):
+                  self.btn_clear, self.btn_details):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
         toolbar.addStretch()
 
-        self.btn_settings = make_tool_button("Settings", "settings", self.on_toggle_settings,
-                                              tooltip="Open theme, glass, accent, and shortcut settings")
-        toolbar.addWidget(self.btn_settings)
-        self._tool_buttons.append(self.btn_settings)
-
-        outer.addLayout(toolbar)
+        content.addLayout(toolbar)
 
         # ---- settings (collapsible) ------------------------------------
         self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys,
@@ -268,7 +275,7 @@ class FinderWindow(QMainWindow):
         self.settings_panel.accentRequested.connect(self.on_pick_accent)
         self.settings_panel.shortcutsRequested.connect(self.on_edit_shortcuts)
         self.btn_accent = self.settings_panel.btn_accent
-        outer.addWidget(self.settings_panel)
+        content.addWidget(self.settings_panel)
 
         # ---- body: crossfade container ---------------------------------
         self.fade_widget = QWidget()
@@ -277,7 +284,7 @@ class FinderWindow(QMainWindow):
         self.fade_effect.setOpacity(1.0)
         body_outer = QVBoxLayout(self.fade_widget)
         body_outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.fade_widget, 1)
+        content.addWidget(self.fade_widget, 1)
 
         self.splitter = QSplitter(Qt.Horizontal)
         splitter = self.splitter
@@ -496,7 +503,7 @@ class FinderWindow(QMainWindow):
         # ---- status bar --------------------------------------------------
         self.status = QLabel("")
         self.status.setObjectName("statusBar")
-        outer.addWidget(self.status)
+        content.addWidget(self.status)
 
         relayout_root()
 
@@ -505,6 +512,188 @@ class FinderWindow(QMainWindow):
         # window for every background task run via _run_busy.
         self._busy_overlay = BusyOverlay(self)
         self._busy_overlay.cancelRequested.connect(self._on_cancel_load)
+
+    # ----------------------------------------------------------- header --
+    def _build_header(self, outer):
+        """Application header inside the Qt window (below the native title
+        bar, which is left alone): brand identity on the left, app-level
+        actions on the right. File-set actions stay in the toolbar below;
+        Commands and Settings live here instead of in the toolbar (moved,
+        not duplicated), plus a one-click dark/light toggle."""
+        self.app_header = QFrame()
+        self.app_header.setObjectName("appHeader")
+        self.app_header.setFixedHeight(42)
+        self.app_header.setMouseTracking(True)
+        self.app_header.installEventFilter(self)  # drag-to-move, double-click maximize
+        row = QHBoxLayout(self.app_header)
+        row.setContentsMargins(14, 0, 0, 0)
+        row.setSpacing(8)
+
+        self.header_logo = QLabel()
+        self.header_logo.setObjectName("appLogo")
+        self.header_logo.setFixedSize(26, 26)
+        self.header_logo.setScaledContents(True)
+        self.header_logo.setPixmap(QIcon(APP_ICON_PATH).pixmap(52, 52))
+        row.addWidget(self.header_logo)
+
+        self.header_title = QLabel(APP_NAME)
+        self.header_title.setObjectName("appTitle")
+        row.addWidget(self.header_title)
+
+        self.header_descriptor = QLabel(HEADER_DESCRIPTOR)
+        self.header_descriptor.setObjectName("appDescriptor")
+        row.addWidget(self.header_descriptor)
+        row.addStretch(1)
+
+        self.btn_theme_toggle = make_tool_button("", "moon", self.on_toggle_theme)
+        self.btn_theme_toggle.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_commands = make_tool_button("AI Commands", "info", self.on_show_commands,
+                                              tooltip="AI Command Reference: MCP tools and CLI commands")
+        self.btn_settings = make_tool_button("Settings", "settings", self.on_toggle_settings,
+                                              tooltip="Open theme, glass, accent, and shortcut settings")
+        # Overflow for lower-priority actions when the header runs out of
+        # room; only shown while something is collapsed into it.
+        self.btn_header_more = make_tool_button("", "menu", lambda: None, tooltip="More actions")
+        self.btn_header_more.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_header_more.setPopupMode(QToolButton.InstantPopup)
+        self.header_menu = style_menu(QMenu(self))
+        self.btn_header_more.setMenu(self.header_menu)
+        self.btn_header_more.hide()
+
+        # Priority order: later entries collapse into the overflow first.
+        self._header_actions = [self.btn_settings, self.btn_commands, self.btn_theme_toggle]
+        self._header_menu_actions = {}
+        for b, label in ((self.btn_commands, "AI Command Reference"),
+                         (self.btn_theme_toggle, "Switch theme"),
+                         (self.btn_settings, "Settings")):
+            b.setObjectName("headerAction")
+            self._tool_buttons.append(b)
+            act = QAction(label, self)
+            act.triggered.connect(b.click)
+            self._header_menu_actions[b] = act
+        self.btn_header_more.setObjectName("headerAction")
+        self._tool_buttons.append(self.btn_header_more)
+        self._header_collapsed = []
+
+        for b in (self.btn_theme_toggle, self.btn_commands, self.btn_settings, self.btn_header_more):
+            row.addWidget(b)
+
+        # Window controls (Segoe MDL2 glyphs, Windows' own look).
+        row.addSpacing(6)
+        self.win_controls = []
+        for attr, glyph, tip, slot in (
+            ("btn_win_min", "\uE921", "Minimize", self.showMinimized),
+            ("btn_win_max", "\uE922", "Maximize", self._toggle_maximize),
+            ("btn_win_close", "\uE8BB", "Close", self.close),
+        ):
+            b = QToolButton()
+            b.setObjectName("winClose" if attr == "btn_win_close" else "winCtl")
+            b.setText(glyph)
+            b.setToolTip(tip)
+            b.setFixedSize(46, 42)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(slot)
+            setattr(self, attr, b)
+            self.win_controls.append(b)
+            row.addWidget(b)
+        outer.addWidget(self.app_header)
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == event.Type.WindowStateChange and hasattr(self, "btn_win_max"):
+            maxed = self.isMaximized()
+            self.btn_win_max.setText("\uE923" if maxed else "\uE922")
+            self.btn_win_max.setToolTip("Restore" if maxed else "Maximize")
+
+    _RESIZE_MARGIN = 6
+
+    def _resize_edges(self, widget, pos):
+        """Qt.Edges under `pos` (widget coords) for the frameless resize grip."""
+        if self.isMaximized() or self.isFullScreen():
+            return Qt.Edges()
+        g = widget.mapTo(self, pos)
+        m, edges = self._RESIZE_MARGIN, Qt.Edges()
+        if g.x() < m:
+            edges |= Qt.LeftEdge
+        elif g.x() >= self.width() - m:
+            edges |= Qt.RightEdge
+        if g.y() < m:
+            edges |= Qt.TopEdge
+        elif g.y() >= self.height() - m:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if obj in (getattr(self, "app_header", None), getattr(self, "_root", None)) and et in (
+                event.Type.MouseMove, event.Type.MouseButtonPress, event.Type.MouseButtonDblClick):
+            edges = self._resize_edges(obj, event.position().toPoint())
+            if et == event.Type.MouseMove:
+                if edges in (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeFDiagCursor)
+                elif edges in (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeBDiagCursor)
+                elif edges & (Qt.LeftEdge | Qt.RightEdge):
+                    obj.setCursor(Qt.SizeHorCursor)
+                elif edges & (Qt.TopEdge | Qt.BottomEdge):
+                    obj.setCursor(Qt.SizeVerCursor)
+                else:
+                    obj.unsetCursor()
+            elif event.button() == Qt.LeftButton:
+                handle = self.windowHandle()
+                if edges and et == event.Type.MouseButtonPress and handle:
+                    handle.startSystemResize(edges)
+                    return True
+                if obj is self.app_header and not edges:
+                    if et == event.Type.MouseButtonDblClick:
+                        self._toggle_maximize()
+                        return True
+                    if handle and not self.isMaximized():
+                        handle.startSystemMove()
+                        return True
+        return super().eventFilter(obj, event)
+
+    def on_toggle_theme(self):
+        self.set_theme("light" if self.theme == "dark" else "dark")
+
+    def _update_header_layout(self, avail=None):
+        """Collapse lower-priority header actions into the overflow menu when
+        the header is too narrow. The title is never clipped: the descriptor
+        goes first, then actions in reverse priority order."""
+        if avail is None:
+            avail = self.app_header.width()
+        spacing = self.app_header.layout().spacing()
+        fixed = (14 + self.header_logo.width() + self.header_title.sizeHint().width() + 2 * spacing
+                 + 6 + sum(b.width() + spacing for b in self.win_controls))
+        descriptor_w = self.header_descriptor.sizeHint().width() + spacing
+        widths = {b: b.sizeHint().width() + spacing for b in self._header_actions}
+        more_w = self.btn_header_more.sizeHint().width() + spacing
+        total = sum(widths.values())
+
+        show_descriptor = fixed + descriptor_w + total <= avail
+        self.header_descriptor.setVisible(show_descriptor)
+        room = avail - fixed - (descriptor_w if show_descriptor else 0)
+
+        shown = list(self._header_actions)
+        while shown and (sum(widths[b] for b in shown)
+                         + (more_w if len(shown) < len(self._header_actions) else 0)) > room:
+            shown.pop()
+        collapsed = [b for b in self._header_actions if b not in shown]
+        for b in self._header_actions:
+            b.setVisible(b in shown)
+        self.btn_header_more.setVisible(bool(collapsed))
+        # removeAction, not clear(): clear() would delete the QAction objects.
+        for act in self.header_menu.actions():
+            self.header_menu.removeAction(act)
+        for b in collapsed:  # highest priority first
+            self.header_menu.addAction(self._header_menu_actions[b])
+        self._header_collapsed = collapsed
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -528,21 +717,25 @@ class FinderWindow(QMainWindow):
         the names) when the window is too narrow - instead of Qt eliding every
         label down to '...'."""
         labelled = (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent,
-                    self.btn_reload, self.btn_clear, self.btn_details,
-                    self.btn_commands, self.btn_settings)
+                    self.btn_reload, self.btn_clear, self.btn_details)
+        header_labelled = (self.btn_commands, self.btn_settings)
         if not hasattr(self, "_toolbar_full_width"):
+            for b in header_labelled:
+                b._label_text = b.text()
+                b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             for b in labelled:
                 b._label_text = b.text()
                 b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             self._toolbar_full_width = (sum(b.sizeHint().width() for b in labelled)
                                         + self.btn_explorer.width() + 6 * len(labelled) + 24)
             self._toolbar_icon_only = False
-        avail = self.centralWidget().width() - 24
+        avail = self.width() - 24
         want_icons = avail < self._toolbar_full_width
         if want_icons != self._toolbar_icon_only:
             self._toolbar_icon_only = want_icons
-            for b in labelled:
+            for b in labelled + header_labelled:
                 b.setToolButtonStyle(Qt.ToolButtonIconOnly if want_icons else Qt.ToolButtonTextBesideIcon)
+        self._update_header_layout(self.width() - 24)
 
     # ---------------------------------------------------------- theming --
     def _effective_theme(self):
@@ -564,6 +757,14 @@ class FinderWindow(QMainWindow):
                 if name not in hover_icon_cache:
                     hover_icon_cache[name] = icon(name, "hover")
                 return hover_icon_cache[name]
+
+            # Header toggle shows the theme you'd switch TO.
+            self.btn_theme_toggle._icon_name = "moon" if self.theme == "light" else "sun"
+            self.btn_theme_toggle.setToolTip(
+                f"Switch to {'dark' if self.theme == 'light' else 'light'} theme")
+            sw = self.settings_panel.theme_switch
+            if sw.isChecked() != (self.theme == "light"):
+                sw.setChecked(self.theme == "light")  # re-enters set_theme, a no-op
 
             for b in self._tool_buttons:
                 if b._icon_name in ACCENT_ICON_NAMES and self.custom_accent:
