@@ -258,10 +258,12 @@ class FinderWindow(QMainWindow):
                                              tooltip="View full details for every loaded file")
         self.btn_recent = make_tool_button("Recent", "lines", self.on_show_recent,
                                             tooltip="Reopen a recently used folder")
-        for b in (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent, self.btn_reload,
+        for b in (self.btn_remove, self.btn_change, self.btn_recent,
                   self.btn_clear, self.btn_details):
             toolbar.addWidget(b)
             self._tool_buttons.append(b)
+        # Add and Reload live in the title bar (moved, not duplicated).
+        self._move_actions_to_header()
         toolbar.addStretch()
 
         content.addLayout(toolbar)
@@ -532,6 +534,7 @@ class FinderWindow(QMainWindow):
         self.app_header.setMouseTracking(True)
         self.app_header.installEventFilter(self)  # drag-to-move, double-click maximize
         row = QHBoxLayout(self.app_header)
+        self._header_row = row
         row.setContentsMargins(14, 0, 0, 0)
         row.setSpacing(8)
 
@@ -619,6 +622,24 @@ class FinderWindow(QMainWindow):
             self.win_controls.append(b)
             row.addWidget(b)
         outer.addWidget(self.app_header)
+
+    def _move_actions_to_header(self):
+        """Put the common file actions (Add, Reload) in the title bar as
+        icon-only buttons, ahead of the app-level actions; they join the
+        overflow priority list above Settings."""
+        row = self._header_row
+        at = row.indexOf(self.btn_theme_toggle)
+        for b, label in ((self.btn_add, "Add file(s)"), (self.btn_reload, "Reload files")):
+            b.setText("")  # icon-only; the tooltip carries the name
+            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            b.setObjectName("headerAction")
+            row.insertWidget(at, b)
+            at += 1
+            self._tool_buttons.append(b)
+            act = QAction(label, self)
+            act.triggered.connect(b.click)
+            self._header_menu_actions[b] = act
+        self._header_actions = [self.btn_add, self.btn_reload] + self._header_actions
 
     _HEADER_SEARCH_MIN = 140
     _HEADER_SEARCH_MAX = 520
@@ -787,8 +808,8 @@ class FinderWindow(QMainWindow):
         """Labelled toolbar buttons when they fit, icon-only (tooltips carry
         the names) when the window is too narrow - instead of Qt eliding every
         label down to '...'."""
-        labelled = (self.btn_add, self.btn_remove, self.btn_change, self.btn_recent,
-                    self.btn_reload, self.btn_clear, self.btn_details)
+        labelled = (self.btn_remove, self.btn_change, self.btn_recent,
+                    self.btn_clear, self.btn_details)
         header_labelled = (self.btn_commands, self.btn_settings)
         if not hasattr(self, "_toolbar_full_width"):
             for b in header_labelled:

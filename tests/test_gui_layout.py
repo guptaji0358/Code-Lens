@@ -78,7 +78,7 @@ class MainWindowLayoutTests(unittest.TestCase):
         header = self.win.app_header
         header_top = header.mapTo(self.win, header.rect().topLeft()).y()
         header_bottom = header.mapTo(self.win, header.rect().bottomLeft()).y()
-        top = self.win.btn_add.mapTo(self.win, self.win.btn_add.rect().topLeft()).y()
+        top = self.win.btn_remove.mapTo(self.win, self.win.btn_remove.rect().topLeft()).y()
         self.assertLess(header_top, 24, "header should start near the top edge")
         self.assertLess(top - header_bottom, 12, "toolbar should follow the header with no gap/extra row")
 
@@ -87,16 +87,16 @@ class MainWindowLayoutTests(unittest.TestCase):
         # size is derived from the measured width of the labelled toolbar.
         wide = self.win._toolbar_full_width + 60
         self.resize(wide, 780)
-        self.assertEqual(self.win.btn_add.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
+        self.assertEqual(self.win.btn_remove.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
         self.resize(self.win._toolbar_full_width - 40, 560)
-        for b in (self.win.btn_add, self.win.btn_commands, self.win.btn_settings):
+        for b in (self.win.btn_remove, self.win.btn_commands, self.win.btn_settings):
             self.assertEqual(b.toolButtonStyle(), Qt.ToolButtonIconOnly)
             self.assertTrue(b.toolTip(), "icon-only buttons need a tooltip")
         right_edge = max(b.mapTo(self.win, b.rect().topRight()).x()
                          for b in self.win._tool_buttons if b.isVisible())
         self.assertLessEqual(right_edge, self.win.width())
         self.resize(wide, 780)
-        self.assertEqual(self.win.btn_add.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
+        self.assertEqual(self.win.btn_remove.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
 
     def test_settings_is_one_compact_row_without_repeated_state(self):
         from theme import THEMES
@@ -231,11 +231,11 @@ class MainWindowLayoutTests(unittest.TestCase):
     # ---- application header -------------------------------------------------
     def _header_buttons(self):
         w = self.win
-        return [b for b in (w.btn_theme_toggle, w.btn_commands, w.btn_settings, w.btn_header_more)
+        return [b for b in (w.btn_add, w.btn_reload, w.btn_theme_toggle, w.btn_commands, w.btn_settings, w.btn_header_more)
                 if b.isVisible()]
 
     def test_header_identity_and_native_chrome_untouched(self):
-        self.resize(1220, 780)
+        self.resize(1500, 780)  # descriptor is the first thing to yield; check it when roomy
         w = self.win
         self.assertEqual(w.header_title.text(), "CodeLens")
         self.assertFalse(w.header_logo.pixmap().isNull())
@@ -252,7 +252,11 @@ class MainWindowLayoutTests(unittest.TestCase):
             self.assertTrue(b.toolTip(), "header buttons need tooltips")
             self.assertFalse(b.icon().isNull())
         self.assertIn("Command", w.btn_commands.toolTip())
-        for b in (w.btn_add, w.btn_reload, w.btn_change, w.btn_recent):
+        for b in (w.btn_add, w.btn_reload):
+            self.assertIs(b.parentWidget(), w.app_header)
+            self.assertEqual(b.toolButtonStyle(), Qt.ToolButtonIconOnly)
+            self.assertTrue(b.toolTip() and not b.icon().isNull())
+        for b in (w.btn_change, w.btn_recent, w.btn_remove):
             self.assertIsNot(b.parentWidget(), w.app_header)
 
     def test_header_no_clipping_or_overlap_at_both_widths(self):
@@ -327,7 +331,7 @@ class MainWindowLayoutTests(unittest.TestCase):
         tight = (14 + w.header_logo.width() + w.header_title.sizeHint().width() + 2 * spacing
                  + 6 + sum(c.width() + spacing for c in w.win_controls)
                  + w._HEADER_SEARCH_MIN + 3 * spacing
-                 + w.btn_settings.sizeHint().width() + spacing
+                 + sum(b.sizeHint().width() + spacing for b in (w.btn_add, w.btn_reload, w.btn_settings))
                  + w.btn_header_more.sizeHint().width() + spacing + 4)
         w._update_header_layout(avail=tight)
         self.assertFalse(w.header_descriptor.isVisible(), "descriptor drops first when tight")
@@ -430,6 +434,21 @@ class MainWindowLayoutTests(unittest.TestCase):
             w.set_theme(theme); pump(400)
             self.assertIn("#headerSearch", w.styleSheet())
         w.set_theme("dark"); pump(400)
+
+    def test_add_and_reload_in_title_bar_still_work(self):
+        w = self.win
+        self.resize(1220, 780)
+        calls = []
+        orig_add, orig_rel = w.on_add, w.on_reload
+        w.btn_add.clicked.disconnect(); w.btn_reload.clicked.disconnect()
+        w.btn_add.clicked.connect(lambda: calls.append("add"))
+        w.btn_reload.clicked.connect(lambda: calls.append("reload"))
+        w.btn_add.click(); w.btn_reload.click()
+        self.assertEqual(calls, ["add", "reload"])
+        w.btn_add.clicked.disconnect(); w.btn_reload.clicked.disconnect()
+        w.btn_add.clicked.connect(orig_add); w.btn_reload.clicked.connect(orig_rel)
+        self.assertIn(w.shortcut_keys["add"], w.btn_add.toolTip())
+        self.assertIn(w.shortcut_keys["reload"], w.btn_reload.toolTip())
 
     def test_window_controls_minimize_maximize_close(self):
         w = self.win
