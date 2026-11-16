@@ -120,6 +120,7 @@ class FinderWindow(QMainWindow):
         self.auto_select_search = bool(_view["auto_select_search_focus"])
         self._active_extensions = None  # None = no filter, show every extension
         self._collapsed_groups = set()  # relative folder-path tuples collapsed in Group-by-folder view
+        self._lazy_rows = {}  # list row -> builder for path-view rows not yet materialised
         self._path_row_labels = []  # (item, ElidedLabel, TreeGuideRow) triples for the "path"
                                      # view's file rows, so selection can be re-applied on every change
         self.explorer_visible = True
@@ -365,6 +366,8 @@ class FinderWindow(QMainWindow):
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self._on_file_list_context_menu)
         self.file_list.itemSelectionChanged.connect(self._update_path_selection_colors)
+        self.file_list.verticalScrollBar().valueChanged.connect(self._attach_visible_rows)
+        self.file_list.verticalScrollBar().rangeChanged.connect(self._attach_visible_rows)
         left_layout.addWidget(self.file_list, 1)
         self.file_summary = QLabel("0 files loaded")
         self.file_summary.setObjectName("summary")
@@ -1246,6 +1249,7 @@ class FinderWindow(QMainWindow):
         selected_paths = {e.path for e in self._selected_entries()}
         self.file_list.clear()
         self._path_row_labels = []
+        self._lazy_rows = {}
         t = self._effective_theme()
         folder_icon = icon("folder", self.theme)
         mode = self.view_mode
@@ -1346,6 +1350,11 @@ class FinderWindow(QMainWindow):
             # width on every paint, so it stays correct as the panel is
             # resized instead of being baked in once against whatever
             # width happened to be current at build time.
+            # Adding items to a QListWidget that already hosts row widgets
+            # re-lays-out everything (quadratic), so items are added first
+            # and their widgets are attached afterwards, lazily.
+            pending_widgets = []
+
             def render(node, depth, parent_parts):
                 for name in sorted(node["dirs"], key=str.lower):
                     child = node["dirs"][name]
@@ -1354,62 +1363,78 @@ class FinderWindow(QMainWindow):
 
                     header_item = QListWidgetItem()
                     header_item.setFlags(Qt.ItemIsEnabled)
-                    row, lay = add_row(depth, depth * INDENT_PX,
-                                        on_click=lambda k=group_key: self._toggle_group(k))
-
-                    chevron = QToolButton()
-                    chevron.setText("▸" if collapsed else "▾")  # ▸ / ▾
-                    chevron.setFixedSize(16, 16)
-                    chevron.setCursor(Qt.PointingHandCursor)
-                    chevron.setStyleSheet(
-                        "QToolButton { border: none; background: transparent; padding: 0; }"
-                        f"QToolButton {{ color: {t['fg_dim']}; }}"
-                    )
-                    chevron.clicked.connect(lambda checked=False, k=group_key: self._toggle_group(k))
-                    lay.addWidget(chevron)
-
-                    icon_lbl = QLabel()
-                    icon_lbl.setPixmap(folder_icon.pixmap(16, 16))
-                    lay.addWidget(icon_lbl)
-
-                    full_text = f"{name}   ({count_all(child)})"
-                    text_lbl = ElidedLabel(full_text, t["fg_dim"])
-                    lay.addWidget(text_lbl, 1)
-
-                    self.file_list.addItem(header_item)
                     header_item.setSizeHint(QSize(0, ROW_HEIGHT))
-                    self.file_list.setItemWidget(header_item, row)
+                    self.file_list.addItem(header_item)
+
+                    def build_header(depth=depth, name=name, group_key=group_key,
+                                     collapsed=collapsed, child=child):
+                        row, lay = add_row(depth, depth * INDENT_PX,
+                                            on_click=lambda k=group_key: self._toggle_group(k))
+
+                        chevron = QToolButton()
+                        chevron.setText("\u25b8" if collapsed else "\u25be")
+                        chevron.setFixedSize(16, 16)
+                        chevron.setCursor(Qt.PointingHandCursor)
+                        chevron.setStyleSheet(
+                            "QToolButton { border: none; background: transparent; padding: 0; }"
+                            f"QToolButton {{ color: {t['fg_dim']}; }}"
+                        )
+                        chevron.clicked.connect(lambda checked=False, k=group_key: self._toggle_group(k))
+                        lay.addWidget(chevron)
+
+                        icon_lbl = QLabel()
+                        icon_lbl.setPixmap(folder_icon.pixmap(16, 16))
+                        lay.addWidget(icon_lbl)
+
+                        text_lbl = ElidedLabel(f"{name}   ({count_all(child)})", t["fg_dim"])
+                        lay.addWidget(text_lbl, 1)
+                        return row
+
+                    pending_widgets.append((header_item, build_header))
 
                     if not collapsed:
                         render(child, depth + 1, parent_parts + [name])
 
                 for entry in sorted(node["files"], key=lambda e: os.path.basename(e.path).lower()):
-                    size = self._entry_size_str(entry)
-
                     item = QListWidgetItem()
-                    row, lay = add_row(depth, depth * INDENT_PX + CHEVRON_COL_PX)
-
-                    icon_lbl = QLabel()
-                    icon_lbl.setPixmap(real_file_icon(entry.path).pixmap(16, 16))
-                    lay.addWidget(icon_lbl)
-
                     if entry.editable:
                         item.setData(Qt.UserRole, entry.path)
                         item.setToolTip(entry.path)
-                        full_text = f"{os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}"
-                        text_lbl = ElidedLabel(full_text, t["fg"])
-                        self._path_row_labels.append((item, text_lbl, row))
                     else:
                         self._disable_view_only_item(item)
-                        full_text = f"{os.path.basename(entry.path)}   {size} - unsupported"
-                        text_lbl = ElidedLabel(full_text, t["fg_dim"])
-                    lay.addWidget(text_lbl, 1)
-
-                    self.file_list.addItem(item)
                     item.setSizeHint(QSize(0, ROW_HEIGHT))
-                    self.file_list.setItemWidget(item, row)
+                    self.file_list.addItem(item)
 
-            render(root, 0, [])
+                    def build_file(item=item, entry=entry, depth=depth):
+                        size = self._entry_size_str(entry)
+                        row, lay = add_row(depth, depth * INDENT_PX + CHEVRON_COL_PX)
+
+                        icon_lbl = QLabel()
+                        icon_lbl.setPixmap(real_file_icon(entry.path).pixmap(16, 16))
+                        lay.addWidget(icon_lbl)
+
+                        if entry.editable:
+                            full_text = f"{os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}"
+                            text_lbl = ElidedLabel(full_text, t["fg"])
+                            self._path_row_labels.append((item, text_lbl, row))
+                            text_lbl.setSelected(item.isSelected(), t["fg"])
+                            row.setSelected(item.isSelected(), t["accent"])
+                        else:
+                            full_text = f"{os.path.basename(entry.path)}   {size} - unsupported"
+                            text_lbl = ElidedLabel(full_text, t["fg_dim"])
+                        lay.addWidget(text_lbl, 1)
+                        return row
+
+                    pending_widgets.append((item, build_file))
+
+            self.file_list.setUpdatesEnabled(False)
+            try:
+                render(root, 0, [])
+            finally:
+                self.file_list.setUpdatesEnabled(True)
+            # Row widgets are built lazily, only near the viewport (see
+            # _attach_visible_rows); one per file made big folders hang.
+            self._lazy_rows = {self.file_list.row(it): fn for it, fn in pending_widgets}
 
         else:  # "context" - detailed list (default)
             self.file_list.setViewMode(QListWidget.ListMode)
@@ -1462,7 +1487,30 @@ class FinderWindow(QMainWindow):
         else:
             self.filter_btn.setText(" Filter")
 
+        self._attach_visible_rows()
         self._update_path_selection_colors()
+
+    _LAZY_ROW_BUFFER = 30
+
+    def _attach_visible_rows(self, *_args):
+        """Build + attach the Group-by-folder row widgets for rows in (or just
+        outside) the viewport. Rows are fixed-height, so the scroll range is
+        right without their widgets; a view switch is O(visible), not O(files)."""
+        lazy = self._lazy_rows
+        if not lazy:
+            return
+        lw = self.file_list
+        n = lw.count()
+        first = lw.indexAt(QPoint(4, 2)).row()
+        last = lw.indexAt(QPoint(4, max(2, lw.viewport().height() - 2))).row()
+        first = 0 if first < 0 else first
+        last = n - 1 if last < 0 else last
+        lo = max(0, first - self._LAZY_ROW_BUFFER)
+        hi = min(n - 1, last + self._LAZY_ROW_BUFFER)
+        for i in range(lo, hi + 1):
+            build = lazy.pop(i, None)
+            if build is not None:
+                lw.setItemWidget(lw.item(i), build())
 
     def _update_path_selection_colors(self):
         # The "path" (group-by-folder) view renders each file row as a
