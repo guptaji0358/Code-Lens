@@ -326,6 +326,7 @@ class MainWindowLayoutTests(unittest.TestCase):
         spacing = w.app_header.layout().spacing()
         tight = (14 + w.header_logo.width() + w.header_title.sizeHint().width() + 2 * spacing
                  + 6 + sum(c.width() + spacing for c in w.win_controls)
+                 + w._HEADER_SEARCH_MIN + 3 * spacing
                  + w.btn_settings.sizeHint().width() + spacing
                  + w.btn_header_more.sizeHint().width() + spacing + 4)
         w._update_header_layout(avail=tight)
@@ -358,6 +359,77 @@ class MainWindowLayoutTests(unittest.TestCase):
                 self.assertGreater(opaque, 10, f"{theme}: {b.toolTip()} icon renders blank")
         w.set_theme("dark"); pump(400)
 
+
+    # ---- header centre search ---------------------------------------------
+    def test_header_has_no_blank_gap_search_fills_centre(self):
+        w = self.win
+        for width in (1220, 880):
+            self.resize(width, 780)
+            hs = w.header_search
+            left = [w.header_logo, w.header_title] + ([w.header_descriptor] if w.header_descriptor.isVisible() else [])
+            left_edge = max(x.geometry().right() for x in left)
+            right_edge = min(x.geometry().left() for x in self._header_buttons() + w.win_controls)
+            gap = right_edge - left_edge
+            self.assertGreaterEqual(hs.width(), min(w._HEADER_SEARCH_MAX, gap // 2) - 2,
+                                    f"{width}: search does not use the centre space")
+            self.assertGreaterEqual(hs.width(), w._HEADER_SEARCH_MIN)
+            self.assertLessEqual(hs.width(), w._HEADER_SEARCH_MAX)
+            self.assertLessEqual(w.app_header.height(), 52)
+            self.assertTrue(w.app_header.rect().contains(hs.geometry()))
+        self.resize(1220, 780)
+        self.assertGreater(w.header_search.width(), 250)
+        self.resize(880, 780)
+        self.assertLess(w.header_search.width(), 400)
+
+    def test_header_search_is_a_live_view_of_the_existing_input(self):
+        w = self.win
+        w.mode_buttons["one"].setChecked(True); pump(60)
+        self.assertTrue(w.header_search.isEnabled())
+        w.header_search.setText("abc")
+        w._on_header_search_edited("abc")
+        self.assertEqual(w.query_entry.text(), "abc")
+        w.query_entry.setText("xyz")
+        self.assertEqual(w.header_search.text(), "xyz")
+        w.mode_buttons["range"].setChecked(True); pump(60)
+        self.assertEqual(w.header_search.text(), w.range_entry.text())
+        w.header_search.setText("1-2"); w._on_header_search_edited("1-2")
+        self.assertEqual(w.range_entry.text(), "1-2")
+        self.assertEqual(w.query_entry.text(), "xyz", "other mode's text untouched")
+        w.mode_buttons["multi"].setChecked(True); pump(60)
+        self.assertFalse(w.header_search.isEnabled())
+        w.mode_buttons["one"].setChecked(True); pump(60)
+        w.query_entry.clear(); w.range_entry.clear()
+
+    def test_header_search_enter_runs_existing_search_and_ctrl_k_focuses(self):
+        from CodeLensCLI import load_single_file
+        w = self.win
+        entry, _ = load_single_file(self.sample)
+        w.state.files = [entry]
+        w._refresh_file_list()
+        w.mode_buttons["one"].setChecked(True); pump(60)
+        calls = []
+        w.header_search.returnPressed.disconnect()
+        w.header_search.returnPressed.connect(lambda: calls.append(1))
+        w.header_search.returnPressed.emit()
+        self.assertEqual(calls, [1])
+        w.header_search.returnPressed.disconnect()
+        w.header_search.returnPressed.connect(w.on_search)
+        w.header_search.setText("def"); w._on_header_search_edited("def")
+        w.header_search.returnPressed.emit()
+        self.assertTrue(wait_until(lambda: "match" in w.results_summary.text()))
+        w.query_entry.clear()
+        w.query_entry.setFocus()
+        w._focus_header_search()
+        self.assertTrue(w.header_search.hasFocus() or w.header_search.isEnabled())
+        self.assertIn("Ctrl+K", w.header_search.placeholderText())
+        self.assertTrue(w.header_search.toolTip())
+
+    def test_header_search_themed_in_both_themes(self):
+        w = self.win
+        for theme in ("dark", "light"):
+            w.set_theme(theme); pump(400)
+            self.assertIn("#headerSearch", w.styleSheet())
+        w.set_theme("dark"); pump(400)
 
     def test_window_controls_minimize_maximize_close(self):
         w = self.win

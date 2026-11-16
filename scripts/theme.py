@@ -245,6 +245,9 @@ def build_stylesheet(t, glass):
     QFrame#appHeader QLabel {{ background: transparent; border: none; }}
     QLabel#appTitle {{ font-size: 12pt; font-weight: 700; }}
     QLabel#appDescriptor {{ color: {t['fg_dim']}; font-size: 9pt; }}
+    QLineEdit#headerSearch {{ background: {input_bg}; border: 1px solid {border_soft}; border-radius: 8px; padding: 2px 10px; font-family: '{FONT_UI}'; font-size: 9pt; }}
+    QLineEdit#headerSearch:focus {{ border: 1px solid {accent}; }}
+    QLineEdit#headerSearch:disabled {{ color: {t['fg_dim']}; }}
     QToolButton#headerAction {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 5px 9px; }}
     QToolButton#headerAction:hover {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
     QToolButton#winCtl, QToolButton#winClose {{

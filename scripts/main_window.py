@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QDialog, QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect, QAbstractButton, QStackedWidget, QKeySequenceEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMessageBox,
-    QMenu, QFileIconProvider, QWidgetAction,
+    QMenu, QFileIconProvider, QWidgetAction, QSizePolicy,
 )
 
 import CodeLensCLI as core
@@ -507,6 +507,12 @@ class FinderWindow(QMainWindow):
 
         relayout_root()
 
+        # Header search mirrors the inputs built above.
+        for entry in (self.query_entry, self.range_entry):
+            entry.textChanged.connect(self._sync_header_search_text)
+        self.mode_group.buttonToggled.connect(self._sync_header_search_mode)
+        self._sync_header_search_mode()
+
         # Created last so it's the topmost child by default (also re-raised
         # on every start() call) - one overlay instance covers the entire
         # window for every background task run via _run_busy.
@@ -543,6 +549,22 @@ class FinderWindow(QMainWindow):
         self.header_descriptor = QLabel(HEADER_DESCRIPTOR)
         self.header_descriptor.setObjectName("appDescriptor")
         row.addWidget(self.header_descriptor)
+
+        # Centre section: a view onto the existing search input (no search
+        # logic of its own) so the header's middle is useful, not blank.
+        # Flanked by equal stretches so it stays centred between identity and
+        # actions; it grows to _HEADER_SEARCH_MAX, shrinks to its minimum.
+        row.addStretch(1)
+        self.header_search = QLineEdit()
+        self.header_search.setObjectName("headerSearch")
+        self.header_search.setClearButtonEnabled(True)
+        self.header_search.setMinimumWidth(self._HEADER_SEARCH_MIN)
+        self.header_search.setMaximumWidth(self._HEADER_SEARCH_MAX)
+        self.header_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header_search.setFixedHeight(30)
+        self.header_search.textEdited.connect(self._on_header_search_edited)
+        self.header_search.returnPressed.connect(self.on_search)
+        row.addWidget(self.header_search, 100)
         row.addStretch(1)
 
         self.btn_theme_toggle = make_tool_button("", "moon", self.on_toggle_theme)
@@ -597,6 +619,54 @@ class FinderWindow(QMainWindow):
             self.win_controls.append(b)
             row.addWidget(b)
         outer.addWidget(self.app_header)
+
+    _HEADER_SEARCH_MIN = 140
+    _HEADER_SEARCH_MAX = 520
+
+    def _header_search_target(self):
+        """The existing input the header field stands in for (None in
+        Multi Line mode, whose snippet box cannot be a single-line field)."""
+        return {"one": self.query_entry, "range": self.range_entry}.get(self._mode_value())
+
+    def _on_header_search_edited(self, text):
+        target = self._header_search_target()
+        if target is not None:
+            target.setText(text)  # textChanged -> _sync_header_search_text is a no-op
+
+    def _sync_header_search_text(self, _text=None):
+        target = self._header_search_target()
+        if target is not None and self.sender() in (None, target):
+            if self.header_search.text() != target.text():
+                self.header_search.setText(target.text())
+
+    def _sync_header_search_mode(self, *_args):
+        mode = self._mode_value()
+        target = self._header_search_target()
+        hs = self.header_search
+        hs.setEnabled(target is not None)
+        if target is None:
+            hs.setText("")
+            hs.setPlaceholderText("Multi Line: use the snippet box below")
+        else:
+            hs.setText(target.text())
+            hs.setPlaceholderText("Search loaded files…  (Ctrl+K)" if mode == "one"
+                                  else "Line range, e.g. 1500-3000  (Ctrl+K)")
+        hs.setToolTip("Quick search - the same input as the search box below. "
+                      "Press Enter to search, Esc to clear, Ctrl+K to focus.")
+
+    def _focus_header_search(self):
+        if self.header_search.isEnabled():
+            self.header_search.setFocus()
+            self.header_search.selectAll()
+        else:  # Multi Line: send focus to the real snippet box instead
+            self.query_multiline.setFocus()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.header_search.hasFocus():
+            self.header_search.clear()
+            self._on_header_search_edited("")
+            return
+        super().keyPressEvent(event)
 
     def _toggle_maximize(self):
         if self.isMaximized():
@@ -670,7 +740,8 @@ class FinderWindow(QMainWindow):
             avail = self.app_header.width()
         spacing = self.app_header.layout().spacing()
         fixed = (14 + self.header_logo.width() + self.header_title.sizeHint().width() + 2 * spacing
-                 + 6 + sum(b.width() + spacing for b in self.win_controls))
+                 + 6 + sum(b.width() + spacing for b in self.win_controls)
+                 + self._HEADER_SEARCH_MIN + 3 * spacing)  # search keeps its minimum before anything else yields
         descriptor_w = self.header_descriptor.sizeHint().width() + spacing
         widths = {b: b.sizeHint().width() + spacing for b in self._header_actions}
         more_w = self.btn_header_more.sizeHint().width() + spacing
@@ -893,6 +964,10 @@ class FinderWindow(QMainWindow):
         numpad.activated.connect(self.on_search)
         self._shortcut_objs["search_numpad"] = numpad
         self._all_shortcuts.append(numpad)
+
+        focus_sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        focus_sc.activated.connect(self._focus_header_search)
+        self._all_shortcuts.append(focus_sc)
 
         # Results zoom - fixed, not part of the editable shortcut list.
         for seq in ("Ctrl+=", "Ctrl++"):
