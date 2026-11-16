@@ -40,7 +40,7 @@ from theme import (
 )
 from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
-    make_tool_button, BusyOverlay,
+    make_tool_button, BusyOverlay, AutoSelectLineEdit, AutoSelectPlainTextEdit,
 )
 from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel, CommandReferenceDialog
 from persistence import (
@@ -115,7 +115,9 @@ class FinderWindow(QMainWindow):
         self._view_refresh_gen = 0  # bumped on every view-mode switch; guards against a stale
                                      # background Group-By tree computation (see
                                      # _on_view_mode_change) landing after the user switched away
-        self.hide_unsupported = load_view_settings()["hide_unsupported"]
+        _view = load_view_settings()
+        self.hide_unsupported = _view["hide_unsupported"]
+        self.auto_select_search = bool(_view["auto_select_search_focus"])
         self._active_extensions = None  # None = no filter, show every extension
         self._collapsed_groups = set()  # relative folder-path tuples collapsed in Group-by-folder view
         self._path_row_labels = []  # (item, ElidedLabel, TreeGuideRow) triples for the "path"
@@ -155,6 +157,8 @@ class FinderWindow(QMainWindow):
         self._tool_buttons = []
 
         self._build_ui()
+        for _w in self._auto_select_inputs():
+            _w.auto_select_on_focus = self.auto_select_search
         self._install_shortcuts()
         self._refresh_tooltips()
         self._apply_theme(animate=False)
@@ -270,10 +274,11 @@ class FinderWindow(QMainWindow):
 
         # ---- settings (collapsible) ------------------------------------
         self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys,
-                                             self.hide_unsupported)
+                                             self.hide_unsupported, self.auto_select_search)
         self.settings_panel.themeChanged.connect(self.set_theme)
         self.settings_panel.glassChanged.connect(self.set_glass)
         self.settings_panel.hideUnsupportedChanged.connect(self.set_hide_unsupported)
+        self.settings_panel.autoSelectSearchChanged.connect(self.set_auto_select_search)
         self.settings_panel.accentRequested.connect(self.on_pick_accent)
         self.settings_panel.shortcutsRequested.connect(self.on_edit_shortcuts)
         self.btn_accent = self.settings_panel.btn_accent
@@ -413,15 +418,15 @@ class FinderWindow(QMainWindow):
         sc_layout.addLayout(mode_row)
 
         input_row = QHBoxLayout()
-        self.query_entry = QLineEdit()
+        self.query_entry = AutoSelectLineEdit()
         self.query_entry.setPlaceholderText("Type exact text to search for...")
         self.query_entry.returnPressed.connect(self.on_search)
 
-        self.query_multiline = QPlainTextEdit()
+        self.query_multiline = AutoSelectPlainTextEdit()
         self.query_multiline.setPlaceholderText("Paste or type a multi-line snippet...")
         self.query_multiline.setMinimumHeight(84)
 
-        self.range_entry = QLineEdit()
+        self.range_entry = AutoSelectLineEdit()
         self.range_entry.setPlaceholderText("e.g. 1500-3000")
         self.range_entry.returnPressed.connect(self.on_search)
 
@@ -558,7 +563,7 @@ class FinderWindow(QMainWindow):
         # Flanked by equal stretches so it stays centred between identity and
         # actions; it grows to _HEADER_SEARCH_MAX, shrinks to its minimum.
         row.addStretch(1)
-        self.header_search = QLineEdit()
+        self.header_search = AutoSelectLineEdit()
         self.header_search.setObjectName("headerSearch")
         self.header_search.setClearButtonEnabled(True)
         self.header_search.setMinimumWidth(self._HEADER_SEARCH_MIN)
@@ -937,6 +942,18 @@ class FinderWindow(QMainWindow):
         self._refresh_file_list()
         self._set_status(
             f"Unsupported files {'hidden' if enabled else 'shown'} in Solution Explorer.", "ok")
+
+    def _auto_select_inputs(self):
+        return (self.header_search, self.query_entry, self.query_multiline, self.range_entry)
+
+    def set_auto_select_search(self, enabled):
+        enabled = bool(enabled)
+        self.auto_select_search = enabled
+        for w in self._auto_select_inputs():
+            w.auto_select_on_focus = enabled
+        save_view_setting("auto_select_search_focus", enabled)
+        self._set_status(
+            f"Search text will {'now' if enabled else 'no longer'} be selected when the search input gains focus.", "ok")
 
     def on_pick_accent(self):
         current = self.custom_accent or THEMES[self.theme]["accent"]

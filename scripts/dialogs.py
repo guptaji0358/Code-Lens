@@ -1202,10 +1202,12 @@ class SettingsPanel(QFrame):
     themeChanged = Signal(str)
     glassChanged = Signal(bool)
     hideUnsupportedChanged = Signal(bool)
+    autoSelectSearchChanged = Signal(bool)
     accentRequested = Signal()
     shortcutsRequested = Signal()
 
-    def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False):
+    def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False,
+                 auto_select_search=False):
         super().__init__(parent)
         self.setObjectName("panel")
         self._max_height = 56
@@ -1243,6 +1245,13 @@ class SettingsPanel(QFrame):
             "from the Solution Explorer file list")
         self.hide_unsupported_chk.toggled.connect(self.hideUnsupportedChanged.emit)
         row.addWidget(self.hide_unsupported_chk)
+
+        self.auto_select_chk = GlassCheckbox("Automatically select text when search input receives focus",
+                                              accent=THEMES[theme]["accent"], fg=THEMES[theme]["fg"])
+        self.auto_select_chk.setChecked(auto_select_search)
+        self.auto_select_chk.setToolTip("Select all existing search text when focus enters the search field.")
+        self.auto_select_chk.toggled.connect(self.autoSelectSearchChanged.emit)
+        row.addWidget(self.auto_select_chk)
 
         row.addStretch()
 
@@ -1297,6 +1306,7 @@ class SettingsPanel(QFrame):
             QPushButton:hover {{ background: {accent_hex}; color: {contrast_fg(accent_hex)}; }}
         """)
         self.hide_unsupported_chk.set_colors(accent_hex, fg if fg is not None else contrast_fg(panel_bg))
+        self.auto_select_chk.set_colors(accent_hex, fg if fg is not None else contrast_fg(panel_bg))
 
     def toggle(self):
         self._visible = not self._visible

@@ -87,6 +87,7 @@ def remember_recent_folder(folder):
 VIEW_SETTINGS_FILE = os.path.join(BASE_DIR, "view_settings.json")
 VIEW_SETTINGS_DEFAULTS = {
     "hide_unsupported": False,
+    "auto_select_search_focus": False,
 }
 
 
