@@ -73,10 +73,14 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertNotIn("brandTag", names)
         self.assertIn("CodeLens", self.win.windowTitle())
 
-    def test_toolbar_is_first_row_at_top(self):
+    def test_toolbar_sits_directly_under_app_header(self):
         self.resize(1220, 780)
+        header = self.win.app_header
+        header_top = header.mapTo(self.win, header.rect().topLeft()).y()
+        header_bottom = header.mapTo(self.win, header.rect().bottomLeft()).y()
         top = self.win.btn_add.mapTo(self.win, self.win.btn_add.rect().topLeft()).y()
-        self.assertLess(top, 24, "toolbar should start near the top edge, not under a brand row")
+        self.assertLess(header_top, 24, "header should start near the top edge")
+        self.assertLess(top - header_bottom, 12, "toolbar should follow the header with no gap/extra row")
 
     def test_toolbar_labels_when_wide_icons_when_narrow(self):
         # Font metrics differ per platform (offscreen vs. real), so the "wide"
@@ -222,6 +226,170 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertTrue(self.win.btn_change.menu().actions())
         self.resize(wide, 780)
         self.assertEqual(self.win.btn_change.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
+
+
+    # ---- application header -------------------------------------------------
+    def _header_buttons(self):
+        w = self.win
+        return [b for b in (w.btn_theme_toggle, w.btn_commands, w.btn_settings, w.btn_header_more)
+                if b.isVisible()]
+
+    def test_header_identity_and_native_chrome_untouched(self):
+        self.resize(1220, 780)
+        w = self.win
+        self.assertEqual(w.header_title.text(), "CodeLens")
+        self.assertFalse(w.header_logo.pixmap().isNull())
+        self.assertTrue(w.header_descriptor.isVisible())
+        self.assertEqual(w.header_descriptor.text(), "AI Code Intelligence")
+        self.assertTrue(w.windowFlags() & Qt.FramelessWindowHint, "header is the title bar; native one is dropped")
+        self.assertEqual(w.app_header.mapTo(w, w.app_header.rect().topLeft()).y(), 0, "header flush with window top")
+        self.assertLessEqual(w.app_header.height(), 52, "header must stay compact")
+
+    def test_header_actions_are_moved_not_duplicated(self):
+        w = self.win
+        for b in (w.btn_commands, w.btn_settings, w.btn_theme_toggle):
+            self.assertIs(b.parentWidget(), w.app_header)
+            self.assertTrue(b.toolTip(), "header buttons need tooltips")
+            self.assertFalse(b.icon().isNull())
+        self.assertIn("Command", w.btn_commands.toolTip())
+        for b in (w.btn_add, w.btn_reload, w.btn_change, w.btn_recent):
+            self.assertIsNot(b.parentWidget(), w.app_header)
+
+    def test_header_no_clipping_or_overlap_at_both_widths(self):
+        for width in (1220, 880):
+            self.resize(width, 780)
+            w = self.win
+            hdr = w.app_header.rect()
+            self.assertGreaterEqual(w.header_title.width(), w.header_title.sizeHint().width(),
+                                    f"{width}: title clipped")
+            widgets = [w.header_logo, w.header_title]
+            if w.header_descriptor.isVisible():
+                widgets.append(w.header_descriptor)
+            widgets += self._header_buttons() + w.win_controls
+            rects = []
+            for x in widgets:
+                r = x.geometry()
+                self.assertTrue(hdr.contains(r), f"{width}: {x.objectName() or x} outside header")
+                rects.append(r)
+            for i, a in enumerate(rects):
+                for b in rects[i + 1:]:
+                    self.assertFalse(a.intersects(b), f"{width}: header widgets overlap")
+            self.assertLessEqual(w.app_header.mapTo(w, w.app_header.rect().bottomRight()).x(), w.width())
+
+    def test_header_density_follows_toolbar(self):
+        w = self.win
+        self.resize(w._toolbar_full_width + 60, 780)
+        self.assertEqual(w.btn_settings.toolButtonStyle(), Qt.ToolButtonTextBesideIcon)
+        self.resize(w._toolbar_full_width - 40, 560)
+        self.assertEqual(w.btn_settings.toolButtonStyle(), Qt.ToolButtonIconOnly)
+        self.resize(w._toolbar_full_width + 60, 780)
+
+    def test_header_theme_toggle_switches_theme_and_syncs_settings_switch(self):
+        w = self.win
+        self.resize(1220, 780)
+        w.set_theme("dark"); pump(400)
+        self.assertEqual(w.btn_theme_toggle._icon_name, "sun")
+        w.btn_theme_toggle.click(); pump(500)
+        self.assertEqual(w.theme, "light")
+        self.assertTrue(w.settings_panel.theme_switch.isChecked())
+        self.assertEqual(w.btn_theme_toggle._icon_name, "moon")
+        self.assertIn("dark", w.btn_theme_toggle.toolTip())
+        w.btn_theme_toggle.click(); pump(500)
+        self.assertEqual(w.theme, "dark")
+        self.assertFalse(w.settings_panel.theme_switch.isChecked())
+        w.settings_panel.theme_switch.setChecked(True); pump(500)
+        self.assertEqual(w.theme, "light")
+        self.assertEqual(w.btn_theme_toggle._icon_name, "moon")
+        w.set_theme("dark"); pump(400)
+
+    def test_header_commands_and_settings_buttons_run_their_actions(self):
+        import main_window
+        w = self.win
+        shown = []
+        orig = main_window.CommandReferenceDialog.show_reference
+        main_window.CommandReferenceDialog.show_reference = staticmethod(lambda *a, **k: shown.append(a))
+        try:
+            w.btn_commands.click()
+        finally:
+            main_window.CommandReferenceDialog.show_reference = orig
+        self.assertEqual(len(shown), 1)
+        before = w.settings_panel._visible
+        w.btn_settings.click()
+        self.assertNotEqual(w.settings_panel._visible, before)
+        w.btn_settings.click()
+        self.assertEqual(w.settings_panel._visible, before)
+
+    def test_header_overflow_collapses_low_priority_actions_and_they_still_work(self):
+        w = self.win
+        self.resize(1220, 780)
+        self.assertFalse(w.btn_header_more.isVisible())
+        spacing = w.app_header.layout().spacing()
+        tight = (14 + w.header_logo.width() + w.header_title.sizeHint().width() + 2 * spacing
+                 + 6 + sum(c.width() + spacing for c in w.win_controls)
+                 + w.btn_settings.sizeHint().width() + spacing
+                 + w.btn_header_more.sizeHint().width() + spacing + 4)
+        w._update_header_layout(avail=tight)
+        self.assertFalse(w.header_descriptor.isVisible(), "descriptor drops first when tight")
+        pump(50)
+        self.assertTrue(w.btn_header_more.isVisible())
+        self.assertTrue(w._header_collapsed)
+        self.assertNotIn(w.btn_settings, w._header_collapsed, "highest-priority action collapses last")
+        self.assertEqual(len(w.header_menu.actions()), len(w._header_collapsed))
+        self.assertIs(w.btn_header_more.menu(), w.header_menu)
+        self.assertIn(w.btn_theme_toggle, w._header_collapsed)
+        before = w.theme
+        w._header_menu_actions[w.btn_theme_toggle].trigger(); pump(500)
+        self.assertNotEqual(w.theme, before)
+        w._header_menu_actions[w.btn_theme_toggle].trigger(); pump(500)
+        self.assertEqual(w.theme, before)
+        w._update_header_layout(avail=w.width() - 24)
+        pump(50)
+        self.assertFalse(w.btn_header_more.isVisible())
+        self.assertTrue(w.btn_commands.isVisible() and w.btn_theme_toggle.isVisible())
+
+    def test_header_icons_render_in_both_themes(self):
+        w = self.win
+        for theme in ("dark", "light"):
+            w.set_theme(theme); pump(400)
+            for b in (w.btn_theme_toggle, w.btn_commands, w.btn_settings):
+                img = b.icon().pixmap(18, 18).toImage()
+                opaque = sum(1 for x in range(img.width()) for y in range(img.height())
+                             if img.pixelColor(x, y).alpha() > 0)
+                self.assertGreater(opaque, 10, f"{theme}: {b.toolTip()} icon renders blank")
+        w.set_theme("dark"); pump(400)
+
+
+    def test_window_controls_minimize_maximize_close(self):
+        w = self.win
+        self.resize(1220, 780)
+        self.assertEqual([b.toolTip() for b in w.win_controls], ["Minimize", "Maximize", "Close"])
+        w.btn_win_max.click(); pump(200)
+        self.assertTrue(w.isMaximized())
+        self.assertEqual(w.btn_win_max.toolTip(), "Restore")
+        w.btn_win_max.click(); pump(200)
+        self.assertFalse(w.isMaximized())
+        self.assertEqual(w.btn_win_max.toolTip(), "Maximize")
+        w.btn_win_min.click(); pump(200)
+        self.assertTrue(w.isMinimized())
+        w.showNormal(); pump(200)
+        closed = []
+        orig = w.close
+        w.btn_win_close.clicked.disconnect()
+        w.btn_win_close.clicked.connect(lambda: closed.append(1))
+        w.btn_win_close.click()
+        self.assertEqual(closed, [1])
+        w.btn_win_close.clicked.disconnect()
+        w.btn_win_close.clicked.connect(orig)
+
+    def test_frameless_resize_edges(self):
+        from PySide6.QtCore import QPoint
+        w = self.win
+        self.resize(1220, 780)
+        self.assertEqual(w._resize_edges(w._root, QPoint(0, 300)), Qt.LeftEdge)
+        self.assertEqual(w._resize_edges(w._root, QPoint(w.width() - 1, w.height() - 1)),
+                         Qt.RightEdge | Qt.BottomEdge)
+        self.assertEqual(w._resize_edges(w._root, QPoint(w.width() // 2, 300)), Qt.Edges())
+        self.assertEqual(w._resize_edges(w.app_header, QPoint(300, 0)), Qt.TopEdge)
 
 
 if __name__ == "__main__":
