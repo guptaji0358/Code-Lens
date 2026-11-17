@@ -6,15 +6,104 @@ color swatch, hover-aware icon buttons, group-by-folder tree row).
 
 from PySide6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve, QRect, QRectF, QPoint, QPointF, QSize, Property,
-    QTimer, Signal, QSequentialAnimationGroup, QPauseAnimation,
+    QTimer, Signal, QEvent, QSequentialAnimationGroup, QPauseAnimation,
 )
 from PySide6.QtGui import QIcon, QPainter, QColor, QPen, QLinearGradient, QFontMetrics, QPainterPath
 from PySide6.QtWidgets import (
     QWidget, QLabel, QToolButton, QRadioButton, QAbstractButton, QGraphicsDropShadowEffect,
-    QFrame, QVBoxLayout, QProgressBar, QPushButton,
+    QFrame, QVBoxLayout, QProgressBar, QPushButton, QLineEdit, QPlainTextEdit,
 )
 
-from theme import THEMES, stable_icon, contrast_fg
+from theme import (THEMES, stable_icon, contrast_fg, RADIUS_CONTAINER, RADIUS_CONTROL,
+                   SHADOW_BLUR, SHADOW_ALPHA, SHADOW_OFFSET_Y)
+
+
+class AutoSelectLineEdit(QLineEdit):
+    """QLineEdit that can select all its text when focus *enters* it.
+
+    Off by default (plain QLineEdit behaviour). When ``auto_select_on_focus``
+    is on:
+    - Tab / Shortcut / programmatic focus: select all in focusInEvent.
+    - Mouse focus: Qt delivers focusInEvent first, then the same press event
+      places the cursor and would drop any selection. So focusInEvent only
+      arms a flag; the press that gave focus is consumed and selects all
+      instead. Later presses (already focused) behave normally.
+    - Window re-activation / popup close merely restore focus the user already
+      had, so they do not re-select.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.auto_select_on_focus = False
+        self._select_on_press = False
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._select_on_press = False
+        if not self.auto_select_on_focus:
+            return
+        reason = event.reason()
+        if reason == Qt.MouseFocusReason:
+            self._select_on_press = True
+        elif reason not in (Qt.ActiveWindowFocusReason, Qt.PopupFocusReason):
+            self.selectAll()
+
+    def focusOutEvent(self, event):
+        self._select_on_press = False
+        super().focusOutEvent(event)
+
+    def mousePressEvent(self, event):
+        if self._select_on_press and event.button() == Qt.LeftButton:
+            self._select_on_press = False
+            self.selectAll()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+
+class AutoSelectPlainTextEdit(QPlainTextEdit):
+    """Multi-line counterpart of AutoSelectLineEdit (same rules). Mouse presses
+    arrive on the viewport, so the press is intercepted with an event filter."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.auto_select_on_focus = False
+        self._select_on_press = False
+        self._swallow_release = False
+        self.viewport().installEventFilter(self)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._select_on_press = False
+        if not self.auto_select_on_focus:
+            return
+        reason = event.reason()
+        if reason == Qt.MouseFocusReason:
+            self._select_on_press = True
+        elif reason not in (Qt.ActiveWindowFocusReason, Qt.PopupFocusReason):
+            self.selectAll()
+
+    def focusOutEvent(self, event):
+        self._select_on_press = False
+        super().focusOutEvent(event)
+
+    def eventFilter(self, obj, event):
+        if (obj is self.viewport() and self._select_on_press
+                and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton):
+            self._select_on_press = False
+            self._swallow_release = True
+            self.selectAll()
+            return True
+        if (obj is self.viewport() and self._swallow_release
+                and event.type() == QEvent.MouseButtonRelease
+                and event.button() == Qt.LeftButton):
+            # The text control would treat a release without its press as a
+            # click and collapse the selection we just made.
+            self._swallow_release = False
+            return True
+        return super().eventFilter(obj, event)
 
 
 class GlassBackdrop(QWidget):
@@ -66,7 +155,10 @@ class GlassBackdrop(QWidget):
 # --------------------------------------------------------------------------
 # GLASS CARD SHADOW HELPER
 # --------------------------------------------------------------------------
-def apply_glass_shadow(widget, color="#000000", blur=36, alpha=110, offset=(0, 10)):
+def apply_glass_shadow(widget, color="#000000", blur=SHADOW_BLUR, alpha=SHADOW_ALPHA,
+                       offset=(0, SHADOW_OFFSET_Y)):
+    """Restrained raised-surface shadow; strength comes from theme.py's
+    SHADOW_* tokens so every raised card matches."""
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(*offset)
@@ -710,7 +802,7 @@ class BusyOverlay(QWidget):
     def apply_theme(self, accent_hex, card_bg, border_hex, fg_hex):
         self._spinner.set_color(accent_hex)
         self._card.setStyleSheet(
-            f"#busyOverlayCard {{ background: {card_bg}; border: 1px solid {border_hex}; border-radius: 14px; }}"
+            f"#busyOverlayCard {{ background: {card_bg}; border: 1px solid {border_hex}; border-radius: {RADIUS_CONTAINER}px; }}"
         )
         self._label.setStyleSheet(f"color: {fg_hex}; background: transparent; border: none;")
         self._bar.setStyleSheet(
@@ -719,7 +811,7 @@ class BusyOverlay(QWidget):
         )
         self._cancel_btn.setStyleSheet(f"""
             QPushButton#busyOverlayCancel {{ background: transparent; color: {accent_hex};
-                border: 1px solid {accent_hex}; border-radius: 8px; padding: 5px 16px; font-weight: 600; }}
+                border: 1px solid {accent_hex}; border-radius: {RADIUS_CONTROL}px; padding: 5px 16px; font-weight: 600; }}
             QPushButton#busyOverlayCancel:hover {{ background: {accent_hex}; color: {card_bg}; }}
         """)
 

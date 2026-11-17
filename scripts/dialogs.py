@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (
 
 import CodeLensCLI as core
 from codelens_agent import reference
-from theme import ACCENT_PRESETS, FONT_MONO, THEMES, with_alpha, contrast_fg, icon
+from theme import (ACCENT_PRESETS, FONT_MONO, THEMES, with_alpha, contrast_fg, icon,
+                   RADIUS_CONTAINER, RADIUS_CONTROL, GLASS_EDGE_ALPHA)
 from widgets import ColorSwatch, GlassSwitch, GlassCheckbox, HoverToolButton, HoverCopyButton, apply_glass_shadow
 from persistence import SHORTCUT_ACTIONS
 
@@ -52,10 +53,10 @@ class AccentColorPicker(QDialog):
         card.setStyleSheet(f"""
             QFrame {{
                 background: {with_alpha(t['bg_panel'], 235)};
-                border-radius: 16px; border: 1px solid {with_alpha('#ffffff', 40)};
+                border-radius: {RADIUS_CONTAINER}px; border: 1px solid {with_alpha('#ffffff', GLASS_EDGE_ALPHA)};
             }}
         """)
-        apply_glass_shadow(card, blur=40, alpha=140)
+        apply_glass_shadow(card)
         outer.addWidget(card)
 
         lay = QVBoxLayout(card)
@@ -81,7 +82,7 @@ class AccentColorPicker(QDialog):
         self.hex_entry = QLineEdit(current_hex)
         self.hex_entry.setStyleSheet(f"""
             QLineEdit {{ background: {with_alpha(t['bg_card'], 200)}; color:{t['fg']};
-                border: 1px solid {with_alpha('#ffffff', 40)}; border-radius: 8px; padding: 6px 8px; }}
+                border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 6px 8px; }}
         """)
         self.preview = ColorSwatch(current_hex)
         self.preview.setEnabled(False)
@@ -96,7 +97,7 @@ class AccentColorPicker(QDialog):
         apply_btn.setCursor(Qt.PointingHandCursor)
         apply_btn.setStyleSheet(f"""
             QPushButton {{ background: {current_hex}; color: {contrast_fg(current_hex)};
-                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 18px; font-weight: 600; }}
         """)
         apply_btn.clicked.connect(self.accept)
         btn_row.addWidget(apply_btn)
@@ -123,7 +124,7 @@ class AccentColorPicker(QDialog):
         self.preview.update()
         self._apply_btn.setStyleSheet(f"""
             QPushButton {{ background: {self.chosen}; color: {contrast_fg(self.chosen)};
-                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 18px; font-weight: 600; }}
         """)
 
     @staticmethod
@@ -174,7 +175,7 @@ class ShortcutsDialog(QDialog):
         # See AnimatedDialog's card for why this is a plain opaque
         # background with no QGraphicsDropShadowEffect.
         card.setStyleSheet(f"""
-            QFrame {{ background: {t['bg_panel']}; border-radius: 16px; border: 1px solid {t['accent']}; }}
+            QFrame {{ background: {t['bg_panel']}; border-radius: {RADIUS_CONTAINER}px; border: 1px solid {with_alpha(t['accent'], 140)}; }}
         """)
         outer.addWidget(card)
 
@@ -200,7 +201,7 @@ class ShortcutsDialog(QDialog):
             edit = QKeySequenceEdit(QKeySequence(current.get(key, default)))
             edit.setStyleSheet(f"""
                 QKeySequenceEdit {{ background: {with_alpha(t['bg_card'], 200)}; color: {t['fg']};
-                    border: 1px solid {with_alpha('#ffffff', 40)}; border-radius: 8px; padding: 4px 8px; }}
+                    border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 4px 8px; }}
             """)
             grid.addWidget(edit, row, 1)
             self.edits[key] = edit
@@ -212,7 +213,7 @@ class ShortcutsDialog(QDialog):
         cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {t['fg_dim']};
-                border: 1px solid {t['border']}; border-radius: 8px; padding: 7px 16px; }}
+                border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 7px 16px; }}
             QPushButton:hover {{ background: {t['bg_card']}; color: {t['fg']}; }}
         """)
         cancel_btn.clicked.connect(self.reject)
@@ -220,7 +221,7 @@ class ShortcutsDialog(QDialog):
         save_btn.setCursor(Qt.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
-                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 18px; font-weight: 600; }}
         """)
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(cancel_btn)
@@ -279,7 +280,7 @@ class PreviewDialog(QDialog):
             QDialog {{ background: {t['bg_panel']}; }}
             QLabel {{ color: {t['fg']}; }}
             QToolButton {{ background: {t['bg_card']}; border: 1px solid {t['border']};
-                border-radius: 8px; color: {t['fg']}; padding: 6px; }}
+                border-radius: {RADIUS_CONTROL}px; color: {t['fg']}; padding: 6px; }}
             QToolButton:hover {{ background: {t['accent']}; border-color: {t['accent']}; }}
             QToolButton:checked {{ background: {t['accent']}; border-color: {t['accent']}; }}
         """)
@@ -344,7 +345,7 @@ class PreviewDialog(QDialog):
         layout.addWidget(self.stack, 1)
 
         content_style = (f"background: {t['bg_card']}; color: {t['fg']}; "
-                          f"border: 1px solid {t['border']}; border-radius: 8px; "
+                          f"border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; "
                           f"font-family: '{FONT_MONO}'; padding: 6px;")
         self.formatted_view.setStyleSheet(content_style)
         self.raw_view.setStyleSheet(content_style)
@@ -454,12 +455,12 @@ class FileDetailsDialog(QDialog):
             QLabel {{ color: {t['fg']}; }}
             QTableWidget {{ background: {t['bg_card']}; color: {t['fg']};
                 gridline-color: {t['border']}; border: 1px solid {t['border']};
-                border-radius: 8px; selection-background-color: {t['accent']};
+                border-radius: {RADIUS_CONTROL}px; selection-background-color: {t['accent']};
                 selection-color: {contrast_fg(t['accent'])}; }}
             QHeaderView::section {{ background: {t['bg_panel']}; color: {t['fg_dim']};
                 padding: 6px; border: none; border-bottom: 1px solid {t['border']}; }}
             QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
-                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 18px; font-weight: 600; }}
         """)
 
         layout = QVBoxLayout(self)
@@ -533,7 +534,7 @@ class FileDetailsDialog(QDialog):
         reveal_btn.setEnabled(False)
         reveal_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {t['fg']};
-                border: 1px solid {t['border']}; border-radius: 8px; padding: 7px 16px; font-weight: 600; }}
+                border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 7px 16px; font-weight: 600; }}
             QPushButton:hover:!disabled {{ background: {t['bg_card']}; }}
             QPushButton:disabled {{ color: {t['fg_dim']}; }}
         """)
@@ -649,15 +650,15 @@ class CommandReferenceDialog(QDialog):
             QDialog {{ background: {t['bg_panel']}; }}
             QLabel {{ color: {t['fg']}; }}
             QLineEdit {{ background: {t['bg_card']}; color: {t['fg']};
-                border: 1px solid {t['border']}; border-radius: 8px; padding: 7px 10px; }}
+                border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 7px 10px; }}
             QListWidget, QTextBrowser {{ background: {t['bg_card']}; color: {t['fg']};
-                border: 1px solid {t['border']}; border-radius: 8px; }}
+                border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; }}
             QSplitter::handle {{ background: transparent; }}
             QListWidget {{ padding: 4px 0; outline: 0; }}
             QToolTip {{ background: {t['bg_card']}; color: {t['fg']};
                 border: 1px solid {t['border']}; padding: 4px 8px; }}
             QPushButton {{ background: {t['accent']}; color: {contrast_fg(t['accent'])};
-                border: none; border-radius: 8px; padding: 7px 18px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 18px; font-weight: 600; }}
             QPushButton:disabled {{ background: {t['bg_card']}; color: {t['fg_dim']}; }}
         """)
         ghost = (f"QPushButton {{ background: transparent; color: {t['fg']};"
@@ -1022,8 +1023,8 @@ class AnimatedDialog(QDialog):
         # paint as a normal, uncomposited widget.
         card.setStyleSheet(f"""
             QFrame#dialogCard {{
-                background: {t['bg_panel']}; border-radius: 16px;
-                border: 1px solid {color};
+                background: {t['bg_panel']}; border-radius: {RADIUS_CONTAINER}px;
+                border: 1px solid {with_alpha(color, 150)};
             }}
         """)
         outer.addWidget(card)
@@ -1055,13 +1056,13 @@ class AnimatedDialog(QDialog):
             if primary:
                 b.setStyleSheet(f"""
                     QPushButton {{ background: {color}; color: {contrast_fg(color)};
-                        border: none; border-radius: 8px; padding: 8px 18px; font-weight: 600; }}
+                        border: none; border-radius: {RADIUS_CONTROL}px; padding: 8px 18px; font-weight: 600; }}
                     QPushButton:hover {{ background: {t['fg']}; color: {t['bg_panel']}; }}
                 """)
             else:
                 b.setStyleSheet(f"""
                     QPushButton {{ background: transparent; color: {t['fg_dim']};
-                        border: 1px solid {t['border']}; border-radius: 8px; padding: 8px 18px; }}
+                        border: 1px solid {t['border']}; border-radius: {RADIUS_CONTROL}px; padding: 8px 18px; }}
                     QPushButton:hover {{ background: {t['bg_card']}; color: {t['fg']}; }}
                 """)
             b.clicked.connect(lambda _c=False, v=value: self._finish(v))
@@ -1202,10 +1203,12 @@ class SettingsPanel(QFrame):
     themeChanged = Signal(str)
     glassChanged = Signal(bool)
     hideUnsupportedChanged = Signal(bool)
+    autoSelectSearchChanged = Signal(bool)
     accentRequested = Signal()
     shortcutsRequested = Signal()
 
-    def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False):
+    def __init__(self, parent, theme, glass_enabled, shortcut_keys, hide_unsupported=False,
+                 auto_select_search=False):
         super().__init__(parent)
         self.setObjectName("panel")
         self._max_height = 56
@@ -1243,6 +1246,13 @@ class SettingsPanel(QFrame):
             "from the Solution Explorer file list")
         self.hide_unsupported_chk.toggled.connect(self.hideUnsupportedChanged.emit)
         row.addWidget(self.hide_unsupported_chk)
+
+        self.auto_select_chk = GlassCheckbox("Automatically select text when search input receives focus",
+                                              accent=THEMES[theme]["accent"], fg=THEMES[theme]["fg"])
+        self.auto_select_chk.setChecked(auto_select_search)
+        self.auto_select_chk.setToolTip("Select all existing search text when focus enters the search field.")
+        self.auto_select_chk.toggled.connect(self.autoSelectSearchChanged.emit)
+        row.addWidget(self.auto_select_chk)
 
         row.addStretch()
 
@@ -1288,15 +1298,16 @@ class SettingsPanel(QFrame):
         self.btn_accent.setIcon(QIcon())
         self.btn_accent.setStyleSheet(f"""
             QPushButton {{ background: {accent_hex}; color: {contrast_fg(accent_hex)};
-                border: none; border-radius: 8px; padding: 7px 14px; font-weight: 600; }}
+                border: none; border-radius: {RADIUS_CONTROL}px; padding: 7px 14px; font-weight: 600; }}
             QPushButton:hover {{ background: {dim}; }}
         """)
         self.btn_shortcuts.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {accent_hex};
-                border: 1px solid {accent_hex}; border-radius: 8px; padding: 6px 12px; font-weight: 600; }}
+                border: 1px solid {accent_hex}; border-radius: {RADIUS_CONTROL}px; padding: 6px 12px; font-weight: 600; }}
             QPushButton:hover {{ background: {accent_hex}; color: {contrast_fg(accent_hex)}; }}
         """)
         self.hide_unsupported_chk.set_colors(accent_hex, fg if fg is not None else contrast_fg(panel_bg))
+        self.auto_select_chk.set_colors(accent_hex, fg if fg is not None else contrast_fg(panel_bg))
 
     def toggle(self):
         self._visible = not self._visible

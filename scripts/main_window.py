@@ -37,11 +37,13 @@ if sys.platform == "win32":
 from theme import (
     APP_ICON_PATH, ACCENT_ICON_NAMES, THEMES, FONT_MONO,
     icon, real_file_icon, tinted_icon, with_alpha, contrast_fg, build_stylesheet, style_menu,
+    RADIUS_CONTROL, RADIUS_SMALL,
 )
 from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
-    make_tool_button, BusyOverlay,
+    make_tool_button, BusyOverlay, AutoSelectLineEdit, AutoSelectPlainTextEdit,
 )
+from tooltips import TooltipManager, set_tooltip_info
 from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel, CommandReferenceDialog
 from persistence import (
     SHORTCUT_ACTIONS, load_shortcuts, save_shortcuts,
@@ -115,9 +117,12 @@ class FinderWindow(QMainWindow):
         self._view_refresh_gen = 0  # bumped on every view-mode switch; guards against a stale
                                      # background Group-By tree computation (see
                                      # _on_view_mode_change) landing after the user switched away
-        self.hide_unsupported = load_view_settings()["hide_unsupported"]
+        _view = load_view_settings()
+        self.hide_unsupported = _view["hide_unsupported"]
+        self.auto_select_search = bool(_view["auto_select_search_focus"])
         self._active_extensions = None  # None = no filter, show every extension
         self._collapsed_groups = set()  # relative folder-path tuples collapsed in Group-by-folder view
+        self._lazy_rows = {}  # list row -> builder for path-view rows not yet materialised
         self._path_row_labels = []  # (item, ElidedLabel, TreeGuideRow) triples for the "path"
                                      # view's file rows, so selection can be re-applied on every change
         self.explorer_visible = True
@@ -155,8 +160,12 @@ class FinderWindow(QMainWindow):
         self._tool_buttons = []
 
         self._build_ui()
+        for _w in self._auto_select_inputs():
+            _w.auto_select_on_focus = self.auto_select_search
         self._install_shortcuts()
         self._refresh_tooltips()
+        # One app-wide tooltip manager for every control, dialogs included.
+        TooltipManager.install(QApplication.instance(), self._effective_theme)
         self._apply_theme(animate=False)
         self._refresh_file_list()
         self._fit_search_card()
@@ -270,10 +279,11 @@ class FinderWindow(QMainWindow):
 
         # ---- settings (collapsible) ------------------------------------
         self.settings_panel = SettingsPanel(root, self.theme, self.glass_enabled, self.shortcut_keys,
-                                             self.hide_unsupported)
+                                             self.hide_unsupported, self.auto_select_search)
         self.settings_panel.themeChanged.connect(self.set_theme)
         self.settings_panel.glassChanged.connect(self.set_glass)
         self.settings_panel.hideUnsupportedChanged.connect(self.set_hide_unsupported)
+        self.settings_panel.autoSelectSearchChanged.connect(self.set_auto_select_search)
         self.settings_panel.accentRequested.connect(self.on_pick_accent)
         self.settings_panel.shortcutsRequested.connect(self.on_edit_shortcuts)
         self.btn_accent = self.settings_panel.btn_accent
@@ -360,6 +370,8 @@ class FinderWindow(QMainWindow):
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self._on_file_list_context_menu)
         self.file_list.itemSelectionChanged.connect(self._update_path_selection_colors)
+        self.file_list.verticalScrollBar().valueChanged.connect(self._attach_visible_rows)
+        self.file_list.verticalScrollBar().rangeChanged.connect(self._attach_visible_rows)
         left_layout.addWidget(self.file_list, 1)
         self.file_summary = QLabel("0 files loaded")
         self.file_summary.setObjectName("summary")
@@ -413,15 +425,15 @@ class FinderWindow(QMainWindow):
         sc_layout.addLayout(mode_row)
 
         input_row = QHBoxLayout()
-        self.query_entry = QLineEdit()
+        self.query_entry = AutoSelectLineEdit()
         self.query_entry.setPlaceholderText("Type exact text to search for...")
         self.query_entry.returnPressed.connect(self.on_search)
 
-        self.query_multiline = QPlainTextEdit()
+        self.query_multiline = AutoSelectPlainTextEdit()
         self.query_multiline.setPlaceholderText("Paste or type a multi-line snippet...")
         self.query_multiline.setMinimumHeight(84)
 
-        self.range_entry = QLineEdit()
+        self.range_entry = AutoSelectLineEdit()
         self.range_entry.setPlaceholderText("e.g. 1500-3000")
         self.range_entry.returnPressed.connect(self.on_search)
 
@@ -509,9 +521,8 @@ class FinderWindow(QMainWindow):
 
         relayout_root()
 
-        # Header search mirrors the inputs built above.
-        for entry in (self.query_entry, self.range_entry):
-            entry.textChanged.connect(self._sync_header_search_text)
+        # Header search is its own input (independent text); it only follows
+        # the active mode for enablement, placeholder and tooltip.
         self.mode_group.buttonToggled.connect(self._sync_header_search_mode)
         self._sync_header_search_mode()
 
@@ -558,15 +569,15 @@ class FinderWindow(QMainWindow):
         # Flanked by equal stretches so it stays centred between identity and
         # actions; it grows to _HEADER_SEARCH_MAX, shrinks to its minimum.
         row.addStretch(1)
-        self.header_search = QLineEdit()
+        self.header_search = AutoSelectLineEdit()
         self.header_search.setObjectName("headerSearch")
         self.header_search.setClearButtonEnabled(True)
+        self.header_search.setPlaceholderText(self._HEADER_SEARCH_PLACEHOLDER)
         self.header_search.setMinimumWidth(self._HEADER_SEARCH_MIN)
         self.header_search.setMaximumWidth(self._HEADER_SEARCH_MAX)
         self.header_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.header_search.setFixedHeight(30)
-        self.header_search.textEdited.connect(self._on_header_search_edited)
-        self.header_search.returnPressed.connect(self.on_search)
+        self.header_search.returnPressed.connect(self._on_header_search_submit)
         row.addWidget(self.header_search, 100)
         row.addStretch(1)
 
@@ -641,6 +652,7 @@ class FinderWindow(QMainWindow):
             self._header_menu_actions[b] = act
         self._header_actions = [self.btn_add, self.btn_reload] + self._header_actions
 
+    _HEADER_SEARCH_PLACEHOLDER = "Search loaded files…  (Ctrl+K)"
     _HEADER_SEARCH_MIN = 140
     _HEADER_SEARCH_MAX = 520
 
@@ -649,30 +661,18 @@ class FinderWindow(QMainWindow):
         Multi Line mode, whose snippet box cannot be a single-line field)."""
         return {"one": self.query_entry, "range": self.range_entry}.get(self._mode_value())
 
-    def _on_header_search_edited(self, text):
-        target = self._header_search_target()
-        if target is not None:
-            target.setText(text)  # textChanged -> _sync_header_search_text is a no-op
-
-    def _sync_header_search_text(self, _text=None):
-        target = self._header_search_target()
-        if target is not None and self.sender() in (None, target):
-            if self.header_search.text() != target.text():
-                self.header_search.setText(target.text())
+    def _on_header_search_submit(self):
+        """Enter in the header field searches with the header's own text,
+        leaving the One-Line / Line Range boxes untouched."""
+        self._run_search(self.header_search.text())
 
     def _sync_header_search_mode(self, *_args):
-        mode = self._mode_value()
         target = self._header_search_target()
         hs = self.header_search
         hs.setEnabled(target is not None)
-        if target is None:
-            hs.setText("")
-            hs.setPlaceholderText("Multi Line: use the snippet box below")
-        else:
-            hs.setText(target.text())
-            hs.setPlaceholderText("Search loaded files…  (Ctrl+K)" if mode == "one"
-                                  else "Line range, e.g. 1500-3000  (Ctrl+K)")
-        hs.setToolTip("Quick search - the same input as the search box below. "
+        # The placeholder is fixed at creation (_HEADER_SEARCH_PLACEHOLDER) and
+        # deliberately NOT touched here: mode switches only toggle enablement.
+        hs.setToolTip("Quick search - its own text, separate from the search box below. "
                       "Press Enter to search, Esc to clear, Ctrl+K to focus.")
 
     def _focus_header_search(self):
@@ -685,7 +685,6 @@ class FinderWindow(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape and self.header_search.hasFocus():
             self.header_search.clear()
-            self._on_header_search_edited("")
             return
         super().keyPressEvent(event)
 
@@ -842,6 +841,8 @@ class FinderWindow(QMainWindow):
             t = self._effective_theme()
             self.setStyleSheet(build_stylesheet(t, self.glass_enabled))
             self.backdrop.set_theme(THEMES[self.theme], t["accent"], self.glass_enabled)
+            if TooltipManager.instance() is not None:
+                TooltipManager.instance().refresh_theme()
 
             hover_icon_cache = {}
 
@@ -938,6 +939,18 @@ class FinderWindow(QMainWindow):
         self._set_status(
             f"Unsupported files {'hidden' if enabled else 'shown'} in Solution Explorer.", "ok")
 
+    def _auto_select_inputs(self):
+        return (self.header_search, self.query_entry, self.query_multiline, self.range_entry)
+
+    def set_auto_select_search(self, enabled):
+        enabled = bool(enabled)
+        self.auto_select_search = enabled
+        for w in self._auto_select_inputs():
+            w.auto_select_on_focus = enabled
+        save_view_setting("auto_select_search_focus", enabled)
+        self._set_status(
+            f"Search text will {'now' if enabled else 'no longer'} be selected when the search input gains focus.", "ok")
+
     def on_pick_accent(self):
         current = self.custom_accent or THEMES[self.theme]["accent"]
         chosen = AccentColorPicker.pick(self, self._effective_theme(), current)
@@ -1030,17 +1043,41 @@ class FinderWindow(QMainWindow):
         save_shortcuts(self.shortcut_keys)
 
     def _refresh_tooltips(self):
+        """Tooltip text for the header/toolbar/search controls. Plain toolTip()
+        strings stay (accessibility + tests); the shortcut chip comes from the
+        live QShortcut objects, so it only shows while that shortcut works."""
         keys = self.shortcut_keys
-        self.btn_add.setToolTip(f"Add file(s) to the working set  ({keys['add']})")
-        self.btn_reload.setToolTip(f"Reload every loaded file from disk  ({keys['reload']})")
-        self.btn_change.setToolTip("Clear everything and start a fresh file set\n"
-                                   "Use the arrow for more: reset search state only  "
-                                   f"({keys['reset']})")
+        so = self._shortcut_objs
+
+        def tip(widget, title, desc=None, action=None, hint_key=None):
+            # Plain toolTip() keeps the configured shortcut text (accessible
+            # name, tests); the bubble body leaves it out because its chip
+            # shows the live shortcut instead.
+            hint = keys.get(hint_key or action)
+            plain = title + (f"\n{desc}" if desc else "") + (f"  ({hint})" if hint else "")
+            widget.setToolTip(plain)
+            set_tooltip_info(widget, title=title, description=desc or "",
+                             shortcut=(lambda k=action: so.get(k)) if action else None)
+
+        tip(self.btn_add, "Add files", "Add file(s) to the working set", "add")
+        tip(self.btn_reload, "Reload", "Reload every loaded file from disk", "reload")
+        tip(self.btn_change, "New Set", "Clear everything and start a fresh file set. "
+            "Use the arrow for more: reset search state only.", hint_key="reset")
         self.act_reset_search.setText("Reset search state")
-        self.act_reset_search.setToolTip(f"Clear the search box and results, keep loaded files  ({keys['reset']})")
-        self.btn_clear.setToolTip(f"Clear the results pane  ({keys['clear_results']})")
-        self.search_btn.setToolTip(f"Run the search  ({keys['search']})")
-        self.case_chk.setToolTip(f"Toggle case-sensitive matching  ({keys['case_sensitive']})")
+        tip(self.act_reset_search, "Reset search state",
+            "Clear the search box and results, keep loaded files", "reset")
+        tip(self.btn_clear, "Clear results", "Clear the results pane", "clear_results")
+        tip(self.search_btn, "Search", "Run the search", "search")
+        tip(self.case_chk, "Case sensitive", "Toggle case-sensitive matching", "case_sensitive")
+        tip(self.btn_explorer, "File list", "Hide or show the file list panel")
+        tip(self.btn_remove, "Remove", "Remove the selected file(s) from the working set")
+        tip(self.btn_details, "Details", "View full details for every loaded file")
+        tip(self.btn_recent, "Recent", "Reopen a recently used folder")
+        tip(self.btn_zoom_out, "Zoom out", "Zoom out the results pane")
+        tip(self.btn_zoom_in, "Zoom in", "Zoom in the results pane")
+        tip(self.btn_commands, "AI Commands", "MCP tools and CLI command reference")
+        tip(self.btn_settings, "Settings", "Theme, glass, accent and shortcut settings")
+        tip(self.btn_header_more, "More actions", "Actions that do not fit in the header")
 
     def on_edit_shortcuts(self):
         result = ShortcutsDialog.edit(self, self._effective_theme(), self.glass_enabled, self.shortcut_keys)
@@ -1057,7 +1094,7 @@ class FinderWindow(QMainWindow):
         color = {"ok": t["ok"], "warn": t["warn"], "error": t["danger"], "dim": t["fg_dim"]}.get(kind, t["fg_dim"])
         self.status.setText(text)
         panel_bg = with_alpha(t["bg_panel"], 130) if self.glass_enabled else t["bg_panel"]
-        self.status.setStyleSheet(f"color: {color}; background: {panel_bg}; padding: 6px 12px; border-radius: 8px;")
+        self.status.setStyleSheet(f"color: {color}; background: {panel_bg}; padding: 6px 12px; border-radius: {RADIUS_CONTROL}px;")
 
     def _entry_size_str(self, entry):
         # entry.size is stat'd once when the file is loaded (see
@@ -1229,6 +1266,7 @@ class FinderWindow(QMainWindow):
         selected_paths = {e.path for e in self._selected_entries()}
         self.file_list.clear()
         self._path_row_labels = []
+        self._lazy_rows = {}
         t = self._effective_theme()
         folder_icon = icon("folder", self.theme)
         mode = self.view_mode
@@ -1329,6 +1367,11 @@ class FinderWindow(QMainWindow):
             # width on every paint, so it stays correct as the panel is
             # resized instead of being baked in once against whatever
             # width happened to be current at build time.
+            # Adding items to a QListWidget that already hosts row widgets
+            # re-lays-out everything (quadratic), so items are added first
+            # and their widgets are attached afterwards, lazily.
+            pending_widgets = []
+
             def render(node, depth, parent_parts):
                 for name in sorted(node["dirs"], key=str.lower):
                     child = node["dirs"][name]
@@ -1337,62 +1380,78 @@ class FinderWindow(QMainWindow):
 
                     header_item = QListWidgetItem()
                     header_item.setFlags(Qt.ItemIsEnabled)
-                    row, lay = add_row(depth, depth * INDENT_PX,
-                                        on_click=lambda k=group_key: self._toggle_group(k))
-
-                    chevron = QToolButton()
-                    chevron.setText("▸" if collapsed else "▾")  # ▸ / ▾
-                    chevron.setFixedSize(16, 16)
-                    chevron.setCursor(Qt.PointingHandCursor)
-                    chevron.setStyleSheet(
-                        "QToolButton { border: none; background: transparent; padding: 0; }"
-                        f"QToolButton {{ color: {t['fg_dim']}; }}"
-                    )
-                    chevron.clicked.connect(lambda checked=False, k=group_key: self._toggle_group(k))
-                    lay.addWidget(chevron)
-
-                    icon_lbl = QLabel()
-                    icon_lbl.setPixmap(folder_icon.pixmap(16, 16))
-                    lay.addWidget(icon_lbl)
-
-                    full_text = f"{name}   ({count_all(child)})"
-                    text_lbl = ElidedLabel(full_text, t["fg_dim"])
-                    lay.addWidget(text_lbl, 1)
-
-                    self.file_list.addItem(header_item)
                     header_item.setSizeHint(QSize(0, ROW_HEIGHT))
-                    self.file_list.setItemWidget(header_item, row)
+                    self.file_list.addItem(header_item)
+
+                    def build_header(depth=depth, name=name, group_key=group_key,
+                                     collapsed=collapsed, child=child):
+                        row, lay = add_row(depth, depth * INDENT_PX,
+                                            on_click=lambda k=group_key: self._toggle_group(k))
+
+                        chevron = QToolButton()
+                        chevron.setText("\u25b8" if collapsed else "\u25be")
+                        chevron.setFixedSize(16, 16)
+                        chevron.setCursor(Qt.PointingHandCursor)
+                        chevron.setStyleSheet(
+                            "QToolButton { border: none; background: transparent; padding: 0; }"
+                            f"QToolButton {{ color: {t['fg_dim']}; }}"
+                        )
+                        chevron.clicked.connect(lambda checked=False, k=group_key: self._toggle_group(k))
+                        lay.addWidget(chevron)
+
+                        icon_lbl = QLabel()
+                        icon_lbl.setPixmap(folder_icon.pixmap(16, 16))
+                        lay.addWidget(icon_lbl)
+
+                        text_lbl = ElidedLabel(f"{name}   ({count_all(child)})", t["fg_dim"])
+                        lay.addWidget(text_lbl, 1)
+                        return row
+
+                    pending_widgets.append((header_item, build_header))
 
                     if not collapsed:
                         render(child, depth + 1, parent_parts + [name])
 
                 for entry in sorted(node["files"], key=lambda e: os.path.basename(e.path).lower()):
-                    size = self._entry_size_str(entry)
-
                     item = QListWidgetItem()
-                    row, lay = add_row(depth, depth * INDENT_PX + CHEVRON_COL_PX)
-
-                    icon_lbl = QLabel()
-                    icon_lbl.setPixmap(real_file_icon(entry.path).pixmap(16, 16))
-                    lay.addWidget(icon_lbl)
-
                     if entry.editable:
                         item.setData(Qt.UserRole, entry.path)
                         item.setToolTip(entry.path)
-                        full_text = f"{os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}"
-                        text_lbl = ElidedLabel(full_text, t["fg"])
-                        self._path_row_labels.append((item, text_lbl, row))
                     else:
                         self._disable_view_only_item(item)
-                        full_text = f"{os.path.basename(entry.path)}   {size} - unsupported"
-                        text_lbl = ElidedLabel(full_text, t["fg_dim"])
-                    lay.addWidget(text_lbl, 1)
-
-                    self.file_list.addItem(item)
                     item.setSizeHint(QSize(0, ROW_HEIGHT))
-                    self.file_list.setItemWidget(item, row)
+                    self.file_list.addItem(item)
 
-            render(root, 0, [])
+                    def build_file(item=item, entry=entry, depth=depth):
+                        size = self._entry_size_str(entry)
+                        row, lay = add_row(depth, depth * INDENT_PX + CHEVRON_COL_PX)
+
+                        icon_lbl = QLabel()
+                        icon_lbl.setPixmap(real_file_icon(entry.path).pixmap(16, 16))
+                        lay.addWidget(icon_lbl)
+
+                        if entry.editable:
+                            full_text = f"{os.path.basename(entry.path)}   {len(entry.lines):,} lines - {size}"
+                            text_lbl = ElidedLabel(full_text, t["fg"])
+                            self._path_row_labels.append((item, text_lbl, row))
+                            text_lbl.setSelected(item.isSelected(), t["fg"])
+                            row.setSelected(item.isSelected(), t["accent"])
+                        else:
+                            full_text = f"{os.path.basename(entry.path)}   {size} - unsupported"
+                            text_lbl = ElidedLabel(full_text, t["fg_dim"])
+                        lay.addWidget(text_lbl, 1)
+                        return row
+
+                    pending_widgets.append((item, build_file))
+
+            self.file_list.setUpdatesEnabled(False)
+            try:
+                render(root, 0, [])
+            finally:
+                self.file_list.setUpdatesEnabled(True)
+            # Row widgets are built lazily, only near the viewport (see
+            # _attach_visible_rows); one per file made big folders hang.
+            self._lazy_rows = {self.file_list.row(it): fn for it, fn in pending_widgets}
 
         else:  # "context" - detailed list (default)
             self.file_list.setViewMode(QListWidget.ListMode)
@@ -1445,7 +1504,30 @@ class FinderWindow(QMainWindow):
         else:
             self.filter_btn.setText(" Filter")
 
+        self._attach_visible_rows()
         self._update_path_selection_colors()
+
+    _LAZY_ROW_BUFFER = 30
+
+    def _attach_visible_rows(self, *_args):
+        """Build + attach the Group-by-folder row widgets for rows in (or just
+        outside) the viewport. Rows are fixed-height, so the scroll range is
+        right without their widgets; a view switch is O(visible), not O(files)."""
+        lazy = self._lazy_rows
+        if not lazy:
+            return
+        lw = self.file_list
+        n = lw.count()
+        first = lw.indexAt(QPoint(4, 2)).row()
+        last = lw.indexAt(QPoint(4, max(2, lw.viewport().height() - 2))).row()
+        first = 0 if first < 0 else first
+        last = n - 1 if last < 0 else last
+        lo = max(0, first - self._LAZY_ROW_BUFFER)
+        hi = min(n - 1, last + self._LAZY_ROW_BUFFER)
+        for i in range(lo, hi + 1):
+            build = lazy.pop(i, None)
+            if build is not None:
+                lw.setItemWidget(lw.item(i), build())
 
     def _update_path_selection_colors(self):
         # The "path" (group-by-folder) view renders each file row as a
@@ -1925,7 +2007,7 @@ class FinderWindow(QMainWindow):
                 remove_btn.setToolTip("Remove from recent folders")
                 remove_btn.setStyleSheet(
                     "QToolButton { border: none; background: transparent; }"
-                    f"QToolButton:hover {{ background: {t['bg_card_hover']}; border-radius: 4px; }}"
+                    f"QToolButton:hover {{ background: {t['bg_card_hover']}; border-radius: {RADIUS_SMALL}px; }}"
                 )
                 row_layout.addWidget(remove_btn)
 
@@ -2041,7 +2123,7 @@ class FinderWindow(QMainWindow):
         "also remove all files" branch was identical to New Set."""
         has_search = bool(self.state.last_search or self.query_entry.text()
                           or self.query_multiline.toPlainText() or self.range_entry.text()
-                          or self.results.toPlainText())
+                          or self.header_search.text() or self.results.toPlainText())
         if has_search and not self._confirm(
             "Reset search state",
             "This clears the search box and the results (your last search term/snippet "
@@ -2054,6 +2136,7 @@ class FinderWindow(QMainWindow):
         self.query_entry.clear()
         self.query_multiline.clear()
         self.range_entry.clear()
+        self.header_search.clear()
         self._clear_results()
         self._set_status("Search state reset.", "ok")
 
@@ -2146,16 +2229,21 @@ class FinderWindow(QMainWindow):
         return "one"
 
     def on_search(self):
+        self._run_search(None)
+
+    def _run_search(self, text):
+        """Run the active mode's search. ``text`` overrides the mode's own
+        input (used by the header field); None means use that input."""
         if not self.state.is_loaded():
             self._info("No files loaded", "Add at least one file first.")
             return
         mode = self._mode_value()
         if mode == "one":
-            self._search_one_line()
+            self._search_one_line(text)
         elif mode == "multi":
             self._search_multi_line()
         else:
-            self._search_line_range()
+            self._search_line_range(text)
 
     def _t(self):
         return self._effective_theme()
@@ -2186,8 +2274,9 @@ class FinderWindow(QMainWindow):
             self.results.insertHtml("".join(self._results_buffer))
             self._results_buffer = []
 
-    def _search_one_line(self):
-        term = self.query_entry.text()
+    def _search_one_line(self, term=None):
+        if term is None:
+            term = self.query_entry.text()
         if not term:
             self._info("Empty search", "Type something to search for.")
             return
@@ -2275,11 +2364,12 @@ class FinderWindow(QMainWindow):
 
         self._run_busy(work, done, "Searching...")
 
-    def _search_line_range(self):
+    def _search_line_range(self, raw=None):
         entry = self._pick_range_file()
         if entry is None:
             return
-        raw = self.range_entry.text()
+        if raw is None:
+            raw = self.range_entry.text()
         parsed = core.parse_range(raw, len(entry.lines))
         if not parsed:
             self._error("Invalid range", "Use e.g. '1500-3000' or a single line number.")

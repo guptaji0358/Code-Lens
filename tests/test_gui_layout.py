@@ -385,24 +385,26 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.resize(880, 780)
         self.assertLess(w.header_search.width(), 400)
 
-    def test_header_search_is_a_live_view_of_the_existing_input(self):
+    def test_header_search_has_independent_text(self):
         w = self.win
+        w.query_entry.clear(); w.range_entry.clear(); w.header_search.clear()
         w.mode_buttons["one"].setChecked(True); pump(60)
         self.assertTrue(w.header_search.isEnabled())
         w.header_search.setText("abc")
-        w._on_header_search_edited("abc")
-        self.assertEqual(w.query_entry.text(), "abc")
+        self.assertEqual(w.query_entry.text(), "")
         w.query_entry.setText("xyz")
-        self.assertEqual(w.header_search.text(), "xyz")
+        self.assertEqual(w.header_search.text(), "abc")
         w.mode_buttons["range"].setChecked(True); pump(60)
-        self.assertEqual(w.header_search.text(), w.range_entry.text())
-        w.header_search.setText("1-2"); w._on_header_search_edited("1-2")
-        self.assertEqual(w.range_entry.text(), "1-2")
+        self.assertEqual(w.header_search.text(), "abc")
+        self.assertEqual(w.range_entry.text(), "")
+        w.range_entry.setText("1-2")
+        self.assertEqual(w.header_search.text(), "abc")
         self.assertEqual(w.query_entry.text(), "xyz", "other mode's text untouched")
         w.mode_buttons["multi"].setChecked(True); pump(60)
         self.assertFalse(w.header_search.isEnabled())
+        self.assertEqual(w.header_search.text(), "abc")
         w.mode_buttons["one"].setChecked(True); pump(60)
-        w.query_entry.clear(); w.range_entry.clear()
+        w.query_entry.clear(); w.range_entry.clear(); w.header_search.clear()
 
     def test_header_search_enter_runs_existing_search_and_ctrl_k_focuses(self):
         from CodeLensCLI import load_single_file
@@ -411,16 +413,12 @@ class MainWindowLayoutTests(unittest.TestCase):
         w.state.files = [entry]
         w._refresh_file_list()
         w.mode_buttons["one"].setChecked(True); pump(60)
-        calls = []
-        w.header_search.returnPressed.disconnect()
-        w.header_search.returnPressed.connect(lambda: calls.append(1))
-        w.header_search.returnPressed.emit()
-        self.assertEqual(calls, [1])
-        w.header_search.returnPressed.disconnect()
-        w.header_search.returnPressed.connect(w.on_search)
-        w.header_search.setText("def"); w._on_header_search_edited("def")
+        w.query_entry.setText("zzz-not-in-file")
+        w.header_search.setText("def")
         w.header_search.returnPressed.emit()
         self.assertTrue(wait_until(lambda: "match" in w.results_summary.text()))
+        self.assertEqual(w.query_entry.text(), "zzz-not-in-file",
+                         "header Enter must not overwrite the One-Line box")
         w.query_entry.clear()
         w.query_entry.setFocus()
         w._focus_header_search()
