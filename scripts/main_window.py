@@ -37,6 +37,7 @@ if sys.platform == "win32":
 from theme import (
     APP_ICON_PATH, ACCENT_ICON_NAMES, THEMES, FONT_MONO,
     icon, real_file_icon, tinted_icon, with_alpha, contrast_fg, build_stylesheet, style_menu,
+    RADIUS_CONTROL, RADIUS_SMALL,
 )
 from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
@@ -571,6 +572,7 @@ class FinderWindow(QMainWindow):
         self.header_search = AutoSelectLineEdit()
         self.header_search.setObjectName("headerSearch")
         self.header_search.setClearButtonEnabled(True)
+        self.header_search.setPlaceholderText(self._HEADER_SEARCH_PLACEHOLDER)
         self.header_search.setMinimumWidth(self._HEADER_SEARCH_MIN)
         self.header_search.setMaximumWidth(self._HEADER_SEARCH_MAX)
         self.header_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -650,6 +652,7 @@ class FinderWindow(QMainWindow):
             self._header_menu_actions[b] = act
         self._header_actions = [self.btn_add, self.btn_reload] + self._header_actions
 
+    _HEADER_SEARCH_PLACEHOLDER = "Search loaded files…  (Ctrl+K)"
     _HEADER_SEARCH_MIN = 140
     _HEADER_SEARCH_MAX = 520
 
@@ -664,15 +667,11 @@ class FinderWindow(QMainWindow):
         self._run_search(self.header_search.text())
 
     def _sync_header_search_mode(self, *_args):
-        mode = self._mode_value()
         target = self._header_search_target()
         hs = self.header_search
         hs.setEnabled(target is not None)
-        if target is None:
-            hs.setPlaceholderText("Multi Line: use the snippet box below")
-        else:
-            hs.setPlaceholderText("Search loaded files…  (Ctrl+K)" if mode == "one"
-                                  else "Line range, e.g. 1500-3000  (Ctrl+K)")
+        # The placeholder is fixed at creation (_HEADER_SEARCH_PLACEHOLDER) and
+        # deliberately NOT touched here: mode switches only toggle enablement.
         hs.setToolTip("Quick search - its own text, separate from the search box below. "
                       "Press Enter to search, Esc to clear, Ctrl+K to focus.")
 
@@ -1095,7 +1094,7 @@ class FinderWindow(QMainWindow):
         color = {"ok": t["ok"], "warn": t["warn"], "error": t["danger"], "dim": t["fg_dim"]}.get(kind, t["fg_dim"])
         self.status.setText(text)
         panel_bg = with_alpha(t["bg_panel"], 130) if self.glass_enabled else t["bg_panel"]
-        self.status.setStyleSheet(f"color: {color}; background: {panel_bg}; padding: 6px 12px; border-radius: 8px;")
+        self.status.setStyleSheet(f"color: {color}; background: {panel_bg}; padding: 6px 12px; border-radius: {RADIUS_CONTROL}px;")
 
     def _entry_size_str(self, entry):
         # entry.size is stat'd once when the file is loaded (see
@@ -2008,7 +2007,7 @@ class FinderWindow(QMainWindow):
                 remove_btn.setToolTip("Remove from recent folders")
                 remove_btn.setStyleSheet(
                     "QToolButton { border: none; background: transparent; }"
-                    f"QToolButton:hover {{ background: {t['bg_card_hover']}; border-radius: 4px; }}"
+                    f"QToolButton:hover {{ background: {t['bg_card_hover']}; border-radius: {RADIUS_SMALL}px; }}"
                 )
                 row_layout.addWidget(remove_btn)
 
