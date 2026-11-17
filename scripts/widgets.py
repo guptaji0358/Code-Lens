@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QProgressBar, QPushButton, QLineEdit, QPlainTextEdit,
 )
 
-from theme import THEMES, stable_icon, contrast_fg
+from theme import (THEMES, stable_icon, contrast_fg, RADIUS_CONTAINER, RADIUS_CONTROL,
+                   SHADOW_BLUR, SHADOW_ALPHA, SHADOW_OFFSET_Y)
 
 
 class AutoSelectLineEdit(QLineEdit):
@@ -154,7 +155,10 @@ class GlassBackdrop(QWidget):
 # --------------------------------------------------------------------------
 # GLASS CARD SHADOW HELPER
 # --------------------------------------------------------------------------
-def apply_glass_shadow(widget, color="#000000", blur=36, alpha=110, offset=(0, 10)):
+def apply_glass_shadow(widget, color="#000000", blur=SHADOW_BLUR, alpha=SHADOW_ALPHA,
+                       offset=(0, SHADOW_OFFSET_Y)):
+    """Restrained raised-surface shadow; strength comes from theme.py's
+    SHADOW_* tokens so every raised card matches."""
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(*offset)
@@ -798,7 +802,7 @@ class BusyOverlay(QWidget):
     def apply_theme(self, accent_hex, card_bg, border_hex, fg_hex):
         self._spinner.set_color(accent_hex)
         self._card.setStyleSheet(
-            f"#busyOverlayCard {{ background: {card_bg}; border: 1px solid {border_hex}; border-radius: 14px; }}"
+            f"#busyOverlayCard {{ background: {card_bg}; border: 1px solid {border_hex}; border-radius: {RADIUS_CONTAINER}px; }}"
         )
         self._label.setStyleSheet(f"color: {fg_hex}; background: transparent; border: none;")
         self._bar.setStyleSheet(
@@ -807,7 +811,7 @@ class BusyOverlay(QWidget):
         )
         self._cancel_btn.setStyleSheet(f"""
             QPushButton#busyOverlayCancel {{ background: transparent; color: {accent_hex};
-                border: 1px solid {accent_hex}; border-radius: 8px; padding: 5px 16px; font-weight: 600; }}
+                border: 1px solid {accent_hex}; border-radius: {RADIUS_CONTROL}px; padding: 5px 16px; font-weight: 600; }}
             QPushButton#busyOverlayCancel:hover {{ background: {accent_hex}; color: {card_bg}; }}
         """)
 

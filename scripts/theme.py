@@ -135,6 +135,27 @@ def with_alpha(hex_color, alpha):
 
 
 # --------------------------------------------------------------------------
+# SHAPE & SURFACE TOKENS
+#
+# One place for corner radii, edge contrast and shadow strength so every
+# widget (QSS, inline setStyleSheet, painted popups) shares the same soft
+# language. Containers use RADIUS_CONTAINER, controls (buttons, inputs,
+# menus, popups) use RADIUS_CONTROL, and tiny inner chips use RADIUS_SMALL.
+# --------------------------------------------------------------------------
+RADIUS_CONTAINER = 12   # panels, lists, dialog cards, text panes
+RADIUS_CONTROL = 8      # buttons, inputs, menus, tooltips, popups
+RADIUS_SMALL = 6        # chips, row highlights, tiny icon buttons
+
+# Opacity (0-255) of the translucent glass edge on containers and controls.
+GLASS_EDGE_ALPHA = 22   # containers in glass mode (was 40: too bright)
+GLASS_EDGE_SOFT_ALPHA = 14
+
+# Drop-shadow strength for raised surfaces (dialog cards, busy overlay).
+SHADOW_BLUR = 28
+SHADOW_ALPHA = 80
+SHADOW_OFFSET_Y = 6
+
+# --------------------------------------------------------------------------
 # THEMES
 # --------------------------------------------------------------------------
 THEMES = {
@@ -143,15 +164,19 @@ THEMES = {
         "bg_card_hover": "#262c40", "fg": "#e6e9f0", "fg_dim": "#8a8fa3",
         "accent": "#4fd1ff", "accent_fg": "#0b0d13", "secondary": "#8b8bff",
         "ok": "#5be38a", "warn": "#ffd166", "danger": "#ff6b6b",
-        "border": "#2a2f42", "hl_bg": "#ffd166", "hl_fg": "#141414",
+        # border: control outline; border_soft: container/separator edge;
+        # border_hover: gentle hover lift on inputs (never the focus colour).
+        "border": "#2c3247", "border_soft": "#232839", "border_hover": "#3a4259",
+        "hl_bg": "#ffd166", "hl_fg": "#141414",
         "glass_border": "#ffffff",
     },
     "light": {
-        "bg_a": "#eef2fb", "bg_b": "#f7e9f7", "bg_panel": "#ffffff", "bg_card": "#eef1f8",
-        "bg_card_hover": "#e2e7f5", "fg": "#1c2130", "fg_dim": "#5b6172",
+        "bg_a": "#eef2fb", "bg_b": "#f7e9f7", "bg_panel": "#ffffff", "bg_card": "#f1f4fa",
+        "bg_card_hover": "#e4e9f6", "fg": "#1c2130", "fg_dim": "#5b6172",
         "accent": "#0969da", "accent_fg": "#ffffff", "secondary": "#6639ba",
         "ok": "#1a7f37", "warn": "#9a6700", "danger": "#cf222e",
-        "border": "#d7dcea", "hl_bg": "#fff2b2", "hl_fg": "#1c2130",
+        "border": "#cfd5e4", "border_soft": "#e3e7f1", "border_hover": "#b9c2d8",
+        "hl_bg": "#fff2b2", "hl_fg": "#1c2130",
         "glass_border": "#ffffff",
     },
 }
@@ -178,39 +203,42 @@ def build_stylesheet(t, glass):
         look, kept as an option for anyone who prefers it or is on a
         low-contrast display.
     """
+    # Containers (panels, lists, text panes) take the faint "soft" edge; controls
+    # (inputs, buttons) keep the slightly stronger "border" so they stay findable.
     if glass:
         panel_bg = with_alpha(t["bg_panel"], 130)
         card_bg = with_alpha(t["bg_card"], 110)
         card_hover_bg = with_alpha(t["bg_card_hover"], 150)
         input_bg = with_alpha(t["bg_card"], 150)
-        border = with_alpha(t["glass_border"], 40)
-        border_soft = with_alpha(t["glass_border"], 22)
+        border = with_alpha(t["glass_border"], GLASS_EDGE_ALPHA)
+        border_soft = with_alpha(t["glass_border"], GLASS_EDGE_SOFT_ALPHA)
     else:
         panel_bg = t["bg_panel"]
         card_bg = t["bg_card"]
         card_hover_bg = t["bg_card_hover"]
         input_bg = t["bg_card"]
         border = t["border"]
-        border_soft = t["border"]
+        border_soft = t["border_soft"]
 
     accent = t["accent"]
     accent_fg = t["accent_fg"]
+    hover_edge = t["border_hover"]
 
     return f"""
     QMainWindow, QWidget#root {{ background: transparent; }}
     QWidget {{ color: {t['fg']}; font-family: '{FONT_UI}'; }}
     QFrame#panel, QFrame#card {{
-        background: {panel_bg}; border-radius: 14px; border: 1px solid {border};
+        background: {panel_bg}; border-radius: {RADIUS_CONTAINER}px; border: 1px solid {border_soft};
     }}
     QFrame#dialogCardOuter {{ background: transparent; }}
     QLabel#sectionLabel {{ color: {t['fg_dim']}; font-weight: 600; font-size: 8.5pt; letter-spacing: 1px; }}
-    QLabel#statusBar {{ background: {panel_bg}; color: {t['fg_dim']}; padding: 6px 12px; border-radius: 8px; }}
+    QLabel#statusBar {{ background: {panel_bg}; color: {t['fg_dim']}; padding: 6px 12px; border-radius: {RADIUS_CONTROL}px; }}
     QLabel#summary {{ color: {t['fg_dim']}; }}
     QListWidget {{
-        background: {card_bg}; border: 1px solid {border_soft}; border-radius: 10px; padding: 4px;
+        background: {card_bg}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTAINER}px; padding: 4px;
         outline: none;
     }}
-    QListWidget::item {{ padding: 8px; border-radius: 6px; }}
+    QListWidget::item {{ padding: 8px; border-radius: {RADIUS_SMALL}px; }}
     QListWidget::item:selected {{ background: {accent}; color: {accent_fg}; }}
     QListWidget::item:hover:!selected {{ background: {card_hover_bg}; }}
     /* Group-by-folder ("path") view rows paint their own flat, edge-to-edge
@@ -225,14 +253,15 @@ def build_stylesheet(t, glass):
     QListWidget#fileList[pathMode="true"]::item:selected {{ background: transparent; color: {t['fg']}; }}
     QListWidget#fileList[pathMode="true"]::item:hover:!selected {{ background: transparent; }}
     QLineEdit, QTextEdit, QPlainTextEdit {{
-        background: {input_bg}; border: 1px solid {border}; border-radius: 10px;
+        background: {input_bg}; border: 1px solid {border}; border-radius: {RADIUS_CONTROL}px;
         padding: 8px; color: {t['fg']}; font-family: '{FONT_MONO}';
         selection-background-color: {accent}; selection-color: {accent_fg};
     }}
+    QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover {{ border: 1px solid {hover_edge}; }}
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{ border: 1px solid {accent}; }}
-    QTextEdit#results {{ background: {with_alpha(t['bg_a'], 90) if glass else t['bg_a']}; border: 1px solid {border_soft}; border-radius: 10px; font-family: '{FONT_MONO}'; }}
+    QTextEdit#results {{ background: {with_alpha(t['bg_a'], 90) if glass else t['bg_a']}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTAINER}px; font-family: '{FONT_MONO}'; }}
     QToolButton {{
-        background: {card_bg}; border: 1px solid {border}; border-radius: 10px;
+        background: {card_bg}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTROL}px;
         padding: 7px 12px; color: {t['fg']};
     }}
     QToolButton:hover {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
@@ -240,15 +269,16 @@ def build_stylesheet(t, glass):
     QToolButton:pressed {{ background: {t['secondary']}; }}
     QToolButton#danger:hover {{ background: {t['danger']}; color: white; border-color: {t['danger']}; }}
     QToolButton#warn:hover {{ background: {t['warn']}; color: #1c1300; border-color: {t['warn']}; }}
-    QToolButton#viewToggle {{ padding: 4px; border-radius: 8px; }}
+    QToolButton#viewToggle {{ padding: 4px; border-radius: {RADIUS_SMALL}px; }}
     QFrame#appHeader {{ background: {panel_bg}; border: none; border-bottom: 1px solid {border_soft}; border-radius: 0; }}
     QFrame#appHeader QLabel {{ background: transparent; border: none; }}
     QLabel#appTitle {{ font-size: 12pt; font-weight: 700; }}
     QLabel#appDescriptor {{ color: {t['fg_dim']}; font-size: 9pt; }}
-    QLineEdit#headerSearch {{ background: {input_bg}; border: 1px solid {border_soft}; border-radius: 8px; padding: 2px 10px; font-family: '{FONT_UI}'; font-size: 9pt; }}
+    QLineEdit#headerSearch {{ background: {input_bg}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTROL}px; padding: 2px 10px; font-family: '{FONT_UI}'; font-size: 9pt; }}
+    QLineEdit#headerSearch:hover {{ border: 1px solid {hover_edge}; }}
     QLineEdit#headerSearch:focus {{ border: 1px solid {accent}; }}
     QLineEdit#headerSearch:disabled {{ color: {t['fg_dim']}; }}
-    QToolButton#headerAction {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 5px 9px; }}
+    QToolButton#headerAction {{ background: transparent; border: 1px solid transparent; border-radius: {RADIUS_CONTROL}px; padding: 5px 9px; }}
     QToolButton#headerAction:hover {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
     QToolButton#winCtl, QToolButton#winClose {{
         background: transparent; border: none; border-radius: 0; padding: 0;
@@ -258,22 +288,25 @@ def build_stylesheet(t, glass):
     QToolButton#winClose:hover {{ background: #e81123; color: white; }}
     QToolButton#headerAction::menu-indicator {{ image: none; }}
     QRadioButton {{
-        background: {card_bg}; border: 1px solid {border}; border-radius: 10px;
+        background: {card_bg}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTROL}px;
         padding: 7px 12px;
     }}
     QRadioButton::indicator {{ width: 0; height: 0; }}
     QRadioButton:checked {{ background: {accent}; color: {accent_fg}; border-color: {accent}; }}
     QCheckBox {{ color: {t['fg_dim']}; }}
-    QScrollBar:vertical {{ background: transparent; width: 12px; border-radius: 6px; }}
-    QScrollBar::handle:vertical {{ background: {border}; border-radius: 6px; min-height: 24px; }}
-    QScrollBar::handle:vertical:hover {{ background: {accent}; }}
-    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QScrollBar:vertical {{ background: transparent; width: 12px; border-radius: 6px; margin: 2px; }}
+    QScrollBar::handle:vertical {{ background: {border}; border-radius: 4px; min-height: 24px; margin: 0 2px; }}
+    QScrollBar::handle:vertical:hover {{ background: {hover_edge}; }}
+    QScrollBar:horizontal {{ background: transparent; height: 12px; border-radius: 6px; margin: 2px; }}
+    QScrollBar::handle:horizontal {{ background: {border}; border-radius: 4px; min-width: 24px; margin: 2px 0; }}
+    QScrollBar::handle:horizontal:hover {{ background: {hover_edge}; }}
+    QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ height: 0; width: 0; background: transparent; }}
     QMenu {{
-        background: {panel_bg}; border: 1px solid {border}; border-radius: 8px;
+        background: {panel_bg}; border: 1px solid {border_soft}; border-radius: {RADIUS_CONTROL}px;
         padding: 4px; color: {t['fg']};
     }}
     QMenu::item {{
-        background: transparent; border-radius: 4px; padding: 6px 28px 6px 12px;
+        background: transparent; border-radius: {RADIUS_SMALL}px; padding: 6px 28px 6px 12px;
         margin: 1px 4px;
     }}
     QMenu::item:selected {{ background: {card_hover_bg}; color: {t['fg']}; }}

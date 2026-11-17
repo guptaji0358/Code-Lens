@@ -25,13 +25,13 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QKeySequence, QGuiApplication
 from PySide6.QtWidgets import QWidget, QApplication, QAbstractButton, QLineEdit, QPlainTextEdit
 
-from theme import THEMES, with_alpha
+from theme import THEMES, RADIUS_CONTROL, RADIUS_SMALL
 
 _PROP = "cl_tip"
 _MAX_TEXT_W = 240       # px - keeps the bubble compact
 _PAD_X, _PAD_Y = 12, 9  # inner padding
 _SHADOW = 10            # px of transparent margin around the bubble for the shadow
-_RADIUS = 10
+_RADIUS = RADIUS_CONTROL  # same corner language as menus and inputs
 _SHOW_DELAY_MS = 350    # keyboard focus tips wait a moment, like hover
 _FADE_MS = 140
 
@@ -134,12 +134,12 @@ class CodeLensTooltip(QWidget):
         # Subtle shadow: a few faint rounded rects stacked outward (cheap, no effect object).
         shadow = QColor(0, 0, 0)
         for i in range(_SHADOW, 0, -2):
-            shadow.setAlpha(6 if t is THEMES["dark"] else 4)
+            shadow.setAlpha(5 if t is THEMES["dark"] else 3)
             p.setPen(Qt.NoPen)
             p.setBrush(shadow)
             p.drawRoundedRect(body.adjusted(-i, -i + 2, i, i + 2), _RADIUS + i, _RADIUS + i)
         # Bubble body and border.
-        p.setPen(QPen(QColor(with_alpha(t["border"], 255)), 1))
+        p.setPen(QPen(QColor(t["border_soft"]), 1))  # faint edge, not an outline
         p.setBrush(QColor(t["bg_panel"]))
         p.drawRoundedRect(body, _RADIUS, _RADIUS)
 
@@ -157,9 +157,9 @@ class CodeLensTooltip(QWidget):
             chip_fm = QFontMetrics(self.font())
             cw = chip_fm.horizontalAdvance(self._shortcut) + 12
             chip = QRectF(body.right() - _PAD_X - cw, y + (fm_t.height() - 18) / 2, cw, 18)
-            p.setPen(QPen(QColor(t["border"]), 1))
+            p.setPen(QPen(QColor(t["border_soft"]), 1))
             p.setBrush(QColor(t["bg_card"]))
-            p.drawRoundedRect(chip, 5, 5)
+            p.drawRoundedRect(chip, RADIUS_SMALL, RADIUS_SMALL)
             p.setPen(QColor(t["fg_dim"]))
             p.setFont(self.font())
             p.drawText(chip, int(Qt.AlignCenter), self._shortcut)
