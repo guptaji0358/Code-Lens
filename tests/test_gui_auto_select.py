@@ -198,7 +198,7 @@ class AutoSelectSearchFocusTests(unittest.TestCase):
         self.assertEqual(self.hs().text(), "xy")
         QTest.keyClick(self.hs(), Qt.Key_Backspace)
         self.assertEqual(self.hs().text(), "x")
-        self.assertEqual(self.win.query_entry.text(), "x")
+        self.assertEqual(self.win.query_entry.text(), "", "header typing must not reach One-Line")
 
     def test_search_inputs_follow_setting_and_nothing_else_does(self):
         from PySide6.QtWidgets import QLineEdit
@@ -259,13 +259,14 @@ class AutoSelectSearchFocusTests(unittest.TestCase):
     def test_existing_search_behaviour_unchanged(self):
         w = self.win
         w.set_auto_select_search(True)
-        w.header_search.setText("abc"); w._on_header_search_edited("abc")
-        self.assertEqual(w.query_entry.text(), "abc")
+        w.query_entry.clear()
+        w.header_search.setText("abc")
+        self.assertEqual(w.query_entry.text(), "", "header text is independent")
         w.query_entry.setText("zzz")
-        self.assertEqual(w.header_search.text(), "zzz")
+        self.assertEqual(w.header_search.text(), "abc", "One-Line text is independent")
         w._focus_header_search()                         # Ctrl+K still focuses + selects
         self.assertTrue(w.header_search.hasFocus())
-        self.assertEqual(w.header_search.selectedText(), "zzz")
+        self.assertEqual(w.header_search.selectedText(), "abc")
         w.query_entry.clear()
 
 
