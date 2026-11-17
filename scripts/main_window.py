@@ -517,9 +517,8 @@ class FinderWindow(QMainWindow):
 
         relayout_root()
 
-        # Header search mirrors the inputs built above.
-        for entry in (self.query_entry, self.range_entry):
-            entry.textChanged.connect(self._sync_header_search_text)
+        # Header search is its own input (independent text); it only follows
+        # the active mode for enablement, placeholder and tooltip.
         self.mode_group.buttonToggled.connect(self._sync_header_search_mode)
         self._sync_header_search_mode()
 
@@ -573,8 +572,7 @@ class FinderWindow(QMainWindow):
         self.header_search.setMaximumWidth(self._HEADER_SEARCH_MAX)
         self.header_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.header_search.setFixedHeight(30)
-        self.header_search.textEdited.connect(self._on_header_search_edited)
-        self.header_search.returnPressed.connect(self.on_search)
+        self.header_search.returnPressed.connect(self._on_header_search_submit)
         row.addWidget(self.header_search, 100)
         row.addStretch(1)
 
@@ -657,16 +655,10 @@ class FinderWindow(QMainWindow):
         Multi Line mode, whose snippet box cannot be a single-line field)."""
         return {"one": self.query_entry, "range": self.range_entry}.get(self._mode_value())
 
-    def _on_header_search_edited(self, text):
-        target = self._header_search_target()
-        if target is not None:
-            target.setText(text)  # textChanged -> _sync_header_search_text is a no-op
-
-    def _sync_header_search_text(self, _text=None):
-        target = self._header_search_target()
-        if target is not None and self.sender() in (None, target):
-            if self.header_search.text() != target.text():
-                self.header_search.setText(target.text())
+    def _on_header_search_submit(self):
+        """Enter in the header field searches with the header's own text,
+        leaving the One-Line / Line Range boxes untouched."""
+        self._run_search(self.header_search.text())
 
     def _sync_header_search_mode(self, *_args):
         mode = self._mode_value()
@@ -674,13 +666,11 @@ class FinderWindow(QMainWindow):
         hs = self.header_search
         hs.setEnabled(target is not None)
         if target is None:
-            hs.setText("")
             hs.setPlaceholderText("Multi Line: use the snippet box below")
         else:
-            hs.setText(target.text())
             hs.setPlaceholderText("Search loaded files…  (Ctrl+K)" if mode == "one"
                                   else "Line range, e.g. 1500-3000  (Ctrl+K)")
-        hs.setToolTip("Quick search - the same input as the search box below. "
+        hs.setToolTip("Quick search - its own text, separate from the search box below. "
                       "Press Enter to search, Esc to clear, Ctrl+K to focus.")
 
     def _focus_header_search(self):
@@ -693,7 +683,6 @@ class FinderWindow(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape and self.header_search.hasFocus():
             self.header_search.clear()
-            self._on_header_search_edited("")
             return
         super().keyPressEvent(event)
 
@@ -2106,7 +2095,7 @@ class FinderWindow(QMainWindow):
         "also remove all files" branch was identical to New Set."""
         has_search = bool(self.state.last_search or self.query_entry.text()
                           or self.query_multiline.toPlainText() or self.range_entry.text()
-                          or self.results.toPlainText())
+                          or self.header_search.text() or self.results.toPlainText())
         if has_search and not self._confirm(
             "Reset search state",
             "This clears the search box and the results (your last search term/snippet "
@@ -2119,6 +2108,7 @@ class FinderWindow(QMainWindow):
         self.query_entry.clear()
         self.query_multiline.clear()
         self.range_entry.clear()
+        self.header_search.clear()
         self._clear_results()
         self._set_status("Search state reset.", "ok")
 
@@ -2211,16 +2201,21 @@ class FinderWindow(QMainWindow):
         return "one"
 
     def on_search(self):
+        self._run_search(None)
+
+    def _run_search(self, text):
+        """Run the active mode's search. ``text`` overrides the mode's own
+        input (used by the header field); None means use that input."""
         if not self.state.is_loaded():
             self._info("No files loaded", "Add at least one file first.")
             return
         mode = self._mode_value()
         if mode == "one":
-            self._search_one_line()
+            self._search_one_line(text)
         elif mode == "multi":
             self._search_multi_line()
         else:
-            self._search_line_range()
+            self._search_line_range(text)
 
     def _t(self):
         return self._effective_theme()
@@ -2251,8 +2246,9 @@ class FinderWindow(QMainWindow):
             self.results.insertHtml("".join(self._results_buffer))
             self._results_buffer = []
 
-    def _search_one_line(self):
-        term = self.query_entry.text()
+    def _search_one_line(self, term=None):
+        if term is None:
+            term = self.query_entry.text()
         if not term:
             self._info("Empty search", "Type something to search for.")
             return
@@ -2340,11 +2336,12 @@ class FinderWindow(QMainWindow):
 
         self._run_busy(work, done, "Searching...")
 
-    def _search_line_range(self):
+    def _search_line_range(self, raw=None):
         entry = self._pick_range_file()
         if entry is None:
             return
-        raw = self.range_entry.text()
+        if raw is None:
+            raw = self.range_entry.text()
         parsed = core.parse_range(raw, len(entry.lines))
         if not parsed:
             self._error("Invalid range", "Use e.g. '1500-3000' or a single line number.")
