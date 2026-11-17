@@ -1,0 +1,12 @@
+{
+  "id": "git-commit-push",
+  "name": "Git add, commit, push and verify log",
+  "description": "Stage only the given root-relative paths, commit with a message, push the current branch to origin, then show the last commit (log: short|long|none). Stops without committing if nothing is staged. Input: {paths:[...], message:'...', log:'short', no_push:false, branch:''}.",
+  "entry": "scripts/git_auto.py",
+  "input_schema": {"paths": {"type": "array"}, "message": {"type": "string"}, "log": {"type": "string"}, "no_push": {"type": "boolean"}, "branch": {"type": "string"}},
+  "timeout_s": 120,
+  "risk": 1,
+  "version": "1.0.0",
+  "status": "active",
+  "cache": false
+}
