@@ -42,6 +42,7 @@ from widgets import (
     GlassBackdrop, GlassCheckbox, HoverToolButton, HoverRadioButton, TreeGuideRow, ElidedLabel,
     make_tool_button, BusyOverlay, AutoSelectLineEdit, AutoSelectPlainTextEdit,
 )
+from tooltips import TooltipManager, set_tooltip_info
 from dialogs import AccentColorPicker, ShortcutsDialog, PreviewDialog, FileDetailsDialog, AnimatedDialog, SettingsPanel, CommandReferenceDialog
 from persistence import (
     SHORTCUT_ACTIONS, load_shortcuts, save_shortcuts,
@@ -162,6 +163,8 @@ class FinderWindow(QMainWindow):
             _w.auto_select_on_focus = self.auto_select_search
         self._install_shortcuts()
         self._refresh_tooltips()
+        # One app-wide tooltip manager for every control, dialogs included.
+        TooltipManager.install(QApplication.instance(), self._effective_theme)
         self._apply_theme(animate=False)
         self._refresh_file_list()
         self._fit_search_card()
@@ -839,6 +842,8 @@ class FinderWindow(QMainWindow):
             t = self._effective_theme()
             self.setStyleSheet(build_stylesheet(t, self.glass_enabled))
             self.backdrop.set_theme(THEMES[self.theme], t["accent"], self.glass_enabled)
+            if TooltipManager.instance() is not None:
+                TooltipManager.instance().refresh_theme()
 
             hover_icon_cache = {}
 
@@ -1039,17 +1044,41 @@ class FinderWindow(QMainWindow):
         save_shortcuts(self.shortcut_keys)
 
     def _refresh_tooltips(self):
+        """Tooltip text for the header/toolbar/search controls. Plain toolTip()
+        strings stay (accessibility + tests); the shortcut chip comes from the
+        live QShortcut objects, so it only shows while that shortcut works."""
         keys = self.shortcut_keys
-        self.btn_add.setToolTip(f"Add file(s) to the working set  ({keys['add']})")
-        self.btn_reload.setToolTip(f"Reload every loaded file from disk  ({keys['reload']})")
-        self.btn_change.setToolTip("Clear everything and start a fresh file set\n"
-                                   "Use the arrow for more: reset search state only  "
-                                   f"({keys['reset']})")
+        so = self._shortcut_objs
+
+        def tip(widget, title, desc=None, action=None, hint_key=None):
+            # Plain toolTip() keeps the configured shortcut text (accessible
+            # name, tests); the bubble body leaves it out because its chip
+            # shows the live shortcut instead.
+            hint = keys.get(hint_key or action)
+            plain = title + (f"\n{desc}" if desc else "") + (f"  ({hint})" if hint else "")
+            widget.setToolTip(plain)
+            set_tooltip_info(widget, title=title, description=desc or "",
+                             shortcut=(lambda k=action: so.get(k)) if action else None)
+
+        tip(self.btn_add, "Add files", "Add file(s) to the working set", "add")
+        tip(self.btn_reload, "Reload", "Reload every loaded file from disk", "reload")
+        tip(self.btn_change, "New Set", "Clear everything and start a fresh file set. "
+            "Use the arrow for more: reset search state only.", hint_key="reset")
         self.act_reset_search.setText("Reset search state")
-        self.act_reset_search.setToolTip(f"Clear the search box and results, keep loaded files  ({keys['reset']})")
-        self.btn_clear.setToolTip(f"Clear the results pane  ({keys['clear_results']})")
-        self.search_btn.setToolTip(f"Run the search  ({keys['search']})")
-        self.case_chk.setToolTip(f"Toggle case-sensitive matching  ({keys['case_sensitive']})")
+        tip(self.act_reset_search, "Reset search state",
+            "Clear the search box and results, keep loaded files", "reset")
+        tip(self.btn_clear, "Clear results", "Clear the results pane", "clear_results")
+        tip(self.search_btn, "Search", "Run the search", "search")
+        tip(self.case_chk, "Case sensitive", "Toggle case-sensitive matching", "case_sensitive")
+        tip(self.btn_explorer, "File list", "Hide or show the file list panel")
+        tip(self.btn_remove, "Remove", "Remove the selected file(s) from the working set")
+        tip(self.btn_details, "Details", "View full details for every loaded file")
+        tip(self.btn_recent, "Recent", "Reopen a recently used folder")
+        tip(self.btn_zoom_out, "Zoom out", "Zoom out the results pane")
+        tip(self.btn_zoom_in, "Zoom in", "Zoom in the results pane")
+        tip(self.btn_commands, "AI Commands", "MCP tools and CLI command reference")
+        tip(self.btn_settings, "Settings", "Theme, glass, accent and shortcut settings")
+        tip(self.btn_header_more, "More actions", "Actions that do not fit in the header")
 
     def on_edit_shortcuts(self):
         result = ShortcutsDialog.edit(self, self._effective_theme(), self.glass_enabled, self.shortcut_keys)
